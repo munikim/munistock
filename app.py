@@ -168,9 +168,13 @@ def hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
 
 def load_users() -> dict:
-    if os.path.exists(USERS_FILE):
-        return json.load(open(USERS_FILE, encoding="utf-8"))
-    # 기본 계정
+    try:
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
     default = {"admin": {"pw": hash_pw("1234"), "seed": 2_000_000}}
     save_users(default)
     return default
@@ -178,20 +182,51 @@ def load_users() -> dict:
 def save_users(users: dict):
     json.dump(users, open(USERS_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
+def _init_data_dir():
+    """앱 최초 실행 시 데이터 디렉토리 및 기본 파일 자동 생성"""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        # users.json 없으면 기본 계정 생성
+        users_path = os.path.join(DATA_DIR, "users.json")
+        if not os.path.exists(users_path):
+            default = {"admin": {"pw": hashlib.sha256("1234".encode()).hexdigest(), "seed": 2_000_000}}
+            with open(users_path, "w", encoding="utf-8") as f:
+                json.dump(default, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        pass  # 권한 문제 등 무시
+
 def user_file(username: str, fname: str) -> str:
-    d = os.path.join(DATA_DIR, username)
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, fname)
+    try:
+        d = os.path.join(DATA_DIR, username)
+        os.makedirs(d, exist_ok=True)
+        # watchlist.json 없으면 빈 파일 자동 생성
+        path = os.path.join(d, fname)
+        if fname.endswith(".json") and not os.path.exists(path):
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([] if "watchlist" in fname or "notifications" in fname
+                          else {} if "users" in fname else [], f)
+        return path
+    except Exception:
+        return os.path.join(os.getcwd(), fname)
 
 def load_portfolio(username: str) -> list:
-    f = user_file(username, "portfolio.json")
-    if os.path.exists(f):
-        return json.load(open(f, encoding="utf-8"))
-    return []
+    try:
+        f = user_file(username, "portfolio.json")
+        if not os.path.exists(f):
+            return []
+        with open(f, encoding="utf-8") as fp:
+            data = json.load(fp)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 def save_portfolio(username: str, data: list):
-    json.dump(data, open(user_file(username, "portfolio.json"), "w",
-                         encoding="utf-8"), ensure_ascii=False, indent=2)
+    try:
+        path = user_file(username, "portfolio.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.warning(f"포트폴리오 저장 오류: {e}")
 
 def fix_portfolio_realized(username: str):
     """보유 중 종목의 잘못된 realized_pnl 강제 0 리셋 (1회성)"""
@@ -296,8 +331,9 @@ def get_stock_list() -> pd.DataFrame:
         pass
     return pd.DataFrame(rows).drop_duplicates("code").reset_index(drop=True)
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=180, show_spinner=False)
 def get_price(ticker: str) -> float:
+    """현재가 조회 — 휴장일/네트워크 오류 시 0.0 반환 (에러 없음)"""
     try:
         import FinanceDataReader as fdr
         end   = datetime.now().strftime("%Y%m%d")
@@ -306,13 +342,15 @@ def get_price(ticker: str) -> float:
         if df is not None and len(df) > 0:
             for c in df.columns:
                 if c.strip().lower() in ("close", "adj close"):
-                    return float(df[c].iloc[-1])
-    except:
-        pass
+                    v = df[c].iloc[-1]
+                    return float(v) if pd.notna(v) and float(v) > 0 else 0.0
+    except Exception:
+        pass  # 휴장일, 네트워크 오류 등 조용히 처리
     return 0.0
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_ohlcv_cached(ticker: str, days: int = 130):
+    """OHLCV 조회 — 휴장일/네트워크 오류 시 None 반환"""
     try:
         import FinanceDataReader as fdr
         end   = datetime.now().strftime("%Y%m%d")
@@ -333,12 +371,10 @@ def get_ohlcv_cached(ticker: str, days: int = 130):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         return df.dropna(subset=["close"])
-    except:
-        return None
+    except Exception:
+        return None  # 조용히 처리
 
-# ════════════════════════════════════════════════════════════
-#  로그인 화면
-# ════════════════════════════════════════════════════════════
+
 def show_login():
     st.markdown("""
     <div style='text-align:center; padding: 3rem 0 1rem;'>
@@ -457,7 +493,7 @@ def page_dashboard(username: str):
         qty       = int(p.get("qty", 1))
         buy_price = float(p.get("buy_price", 0))
         cost      = float(p.get("total_amount", buy_price * qty))
-        cur       = float(get_price(p["ticker"]) or buy_price)
+        cur       = float(get_price(p["ticker"]) or buy_price)  # 캐시됨 (180초)
         val       = cur * qty
         pnl       = val - cost
         pnl_pct   = pnl / cost * 100 if cost else 0
@@ -729,18 +765,29 @@ def page_portfolio(username: str):
 #  [3] 퀀트 스캐너
 # ════════════════════════════════════════════════════════════
 def page_quant(username: str):
-    st.markdown("## 🧮 퀀트 스캐너")
-    st.info("💡 **스캔 최적 시간 안내** — 스캐너는 장이 마감된 오후 3시 30분 이후 ~ 저녁 시간에 돌리는 것이 가장 정확합니다. 장중에는 종가와 거래대금이 계속 변동하므로 정확한 타점을 산출할 수 없습니다.")
+    st.markdown("## 🧮 퀀트 스캐너 2차 정밀")
+    st.info("💡 **스캔 최적 시간 안내** — 장 마감 후 오후 3시 30분 이후 실행 권장. 2차 정밀 필터로 A급 눌림목 종목을 우선 선별합니다.")
+
+    with st.expander("📐 2차 정밀 필터 기준", expanded=False):
+        st.markdown("""
+        **🔥 A급 눌림목 조건 (모두 충족 시)**
+        - 현재가가 20일선 또는 60일선 기준 ±3% 이내 (지지선 근접)
+        - 최근 5일 내 평균 대비 300% 이상 대량 거래 발생
+        - 오늘 거래량이 대량 거래일보다 감소 (세력 보유 신호)
+
+        **일반 종목**: 퀀트 점수 기준 정렬 (모멘텀 60% - 변동성 20%)
+        """)
 
     market = st.selectbox("시장 선택", ["KOSPI", "KOSDAQ", "전체"])
-    top_n  = st.slider("상위 종목 수", 5, 30, 10)
+    top_n  = st.slider("분석 종목 수 (상위)", 10, 50, 20)
 
-    if st.button("🔍 퀀트 스캔 시작"):
-        with st.spinner("데이터 수집 중..."):
+    if st.button("🔍 퀀트 2차 정밀 스캔 시작", type="primary"):
+        with st.spinner("데이터 수집 및 2차 정밀 분석 중..."):
             try:
                 import FinanceDataReader as fdr
                 results = []
                 markets = ["KOSPI","KOSDAQ"] if market == "전체" else [market]
+
                 for mkt in markets:
                     listing = fdr.StockListing(mkt)
                     listing.columns = [c.strip() for c in listing.columns]
@@ -749,61 +796,162 @@ def page_quant(username: str):
                     amt_col  = next((c for c in listing.columns if c in ["Amount","Tvalue"]), None)
                     if not code_col: continue
                     listing[code_col] = listing[code_col].astype(str).str.zfill(6)
-                    sample = listing.nlargest(100, amt_col) if amt_col else listing.head(100)
+                    sample = listing.nlargest(120, amt_col) if amt_col else listing.head(120)
+
                     for _, row in sample.iterrows():
                         ticker = str(row[code_col]).zfill(6)
                         name   = str(row.get(name_col, ticker))
                         try:
                             end   = datetime.now().strftime("%Y%m%d")
-                            start = (datetime.now()-timedelta(days=380)).strftime("%Y%m%d")
+                            start = (datetime.now()-timedelta(days=400)).strftime("%Y%m%d")
                             df = fdr.DataReader(ticker, start, end)
-                            if df is None or len(df) < 60: continue
+                            if df is None or len(df) < 65: continue
+
+                            # 컬럼 정규화
                             for c in df.columns:
                                 cl = c.strip().lower()
                                 if cl in ("close","adj close"): df = df.rename(columns={c:"close"})
-                            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+                                elif cl == "volume":            df = df.rename(columns={c:"volume"})
+                            df["close"]  = pd.to_numeric(df["close"],  errors="coerce")
+                            df["volume"] = pd.to_numeric(df.get("volume", pd.Series([0]*len(df))), errors="coerce")
                             df = df.dropna(subset=["close"])
-                            momentum = (df["close"].iloc[-1]/df["close"].iloc[0]-1)*100
-                            vol_20   = df["close"].pct_change().rolling(20).std().iloc[-1]*100
-                            score    = momentum*0.6 - vol_20*0.2
+                            if len(df) < 65: continue
+
+                            close  = df["close"]
+                            volume = df["volume"]
+
+                            # 기본 퀀트 점수
+                            momentum = (close.iloc[-1] / close.iloc[0] - 1) * 100
+                            vol_20   = close.pct_change().rolling(20).std().iloc[-1] * 100
+                            score    = momentum * 0.6 - vol_20 * 0.2
+                            cur_price = float(close.iloc[-1])
+
+                            # ── 2차 정밀 필터 ─────────────────────────────
+                            ma20 = close.rolling(20).mean().iloc[-1]
+                            ma60 = close.rolling(60).mean().iloc[-1] if len(close) >= 60 else ma20
+
+                            # 조건 1: 현재가가 MA20 또는 MA60 ±3% 이내
+                            near_ma20 = abs(cur_price - ma20) / ma20 <= 0.03 if ma20 else False
+                            near_ma60 = abs(cur_price - ma60) / ma60 <= 0.03 if ma60 else False
+                            near_ma   = near_ma20 or near_ma60
+
+                            # 조건 2: 최근 5일 내 평균 대비 300% 이상 대량 거래
+                            vol_avg   = volume.rolling(20).mean().iloc[-6] if len(volume) >= 21 else volume.mean()
+                            recent5   = volume.iloc[-6:-1]  # 최근 5일 (오늘 제외)
+                            had_spike = bool((recent5 >= vol_avg * 3.0).any()) if vol_avg and vol_avg > 0 else False
+
+                            # 조건 3: 오늘 거래량 < 스파이크 발생일 거래량 (감소 구간)
+                            today_vol = float(volume.iloc[-1]) if len(volume) > 0 else 0
+                            vol_decreasing = False
+                            if had_spike:
+                                spike_vol = float(recent5.max())
+                                vol_decreasing = today_vol < spike_vol
+
+                            # A급 눌림목 판정
+                            is_a_grade = near_ma and had_spike and vol_decreasing
+
+                            # MA 이격도 계산
+                            disp_ma20 = round((cur_price - ma20) / ma20 * 100, 2) if ma20 else 0
+                            disp_ma60 = round((cur_price - ma60) / ma60 * 100, 2) if ma60 else 0
+
                             results.append({
-                                "종목코드": ticker, "종목명": name, "시장": mkt,
-                                "12개월수익률(%)": round(momentum,2),
-                                "변동성(%)":      round(vol_20,2),
-                                "퀀트점수":       round(score,2),
-                                "현재가":         int(df["close"].iloc[-1]),
+                                "is_a_grade":   is_a_grade,
+                                "종목코드":     ticker,
+                                "종목명":       name,
+                                "시장":         mkt,
+                                "현재가":       int(cur_price),
+                                "12개월수익률(%)": round(momentum, 2),
+                                "변동성(%)":    round(vol_20, 2),
+                                "퀀트점수":     round(score, 2),
+                                "MA20이격(%)":  disp_ma20,
+                                "MA60이격(%)":  disp_ma60,
+                                "MA근접":       "✅" if near_ma else "❌",
+                                "대량거래":     "✅" if had_spike else "❌",
+                                "거래감소":     "✅" if vol_decreasing else "❌",
                             })
                         except: continue
+
                 if results:
-                    df_res = (pd.DataFrame(results)
-                              .sort_values("퀀트점수", ascending=False)
-                              .head(top_n).reset_index(drop=True))
-                    df_res.index += 1
-                    st.session_state["quant_records"] = df_res.to_dict("records")
-                    st.session_state["quant_results"] = df_res[["종목코드","종목명"]].to_dict("records")
-                    st.success(f"✅ {len(df_res)}개 종목 발굴!")
+                    df_all = pd.DataFrame(results)
+                    # A급 우선, 그 안에서 퀀트점수 내림차순
+                    df_sorted = df_all.sort_values(
+                        ["is_a_grade","퀀트점수"],
+                        ascending=[False, False]
+                    ).head(top_n).reset_index(drop=True)
+                    df_sorted.index += 1
+                    st.session_state["quant_records"]  = df_sorted.to_dict("records")
+                    st.session_state["quant_results"]  = df_sorted[["종목코드","종목명"]].to_dict("records")
+                    a_cnt = int(df_sorted["is_a_grade"].sum())
+                    st.success(f"✅ 총 {len(df_sorted)}개 분석 완료 | 🔥 A급 눌림목: {a_cnt}개")
                 else:
                     st.warning("결과 없음")
             except Exception as e:
                 st.error(f"오류: {e}")
 
+    # ── 결과 렌더링 (버튼 블록 바깥) ──────────────────────────
     records = st.session_state.get("quant_records", [])
     if not records:
         return
 
     df_show = pd.DataFrame(records)
-    st.markdown(f"### 🏆 퀀트 점수 상위 {len(df_show)}개")
-    fig = px.bar(df_show, x="종목명", y="퀀트점수",
-                 color="퀀트점수", color_continuous_scale=["#ff4b6e","#ffd766","#00d4aa"],
-                 template="plotly_dark")
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      height=220, margin=dict(t=10,b=10))
-    st.plotly_chart(fig, use_container_width=True)
+    a_records = [r for r in records if r.get("is_a_grade")]
+    n_records = [r for r in records if not r.get("is_a_grade")]
 
-    # data_editor 체크박스
+    # ── 🔥 A급 눌림목 섹션 ───────────────────────────────────
+    if a_records:
+        st.markdown(f"### 🔥 A급 눌림목 ({len(a_records)}개)")
+        st.markdown(
+            '<div style="background:linear-gradient(90deg,#ff4b6e22,#ffd76611);'
+            'border:1px solid #ffd766;border-radius:10px;padding:0.5rem 1rem;'
+            'font-size:0.85rem;color:#ffd766;margin-bottom:0.8rem;">'
+            '⚡ MA20/60 근접 + 대량거래 후 거래량 감소 — 3가지 조건 모두 충족한 최우선 후보</div>',
+            unsafe_allow_html=True)
+
+        for r in a_records:
+            sign = "+" if r["12개월수익률(%)"] >= 0 else ""
+            mc   = "#ffd766" if r["MA20이격(%)"] is not None and abs(r["MA20이격(%)"]) <= 3 else "#8892a4"
+            st.markdown(
+                f'<div style="background:#1a1f2e;border:2px solid #ffd766;'
+                f'border-radius:14px;padding:0.8rem 1rem;margin:0.3rem 0;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<div>'
+                f'<span style="font-size:0.9rem;">🔥</span>'
+                f'<b style="font-size:1rem;margin-left:0.3rem;">{r["종목명"]}</b>'
+                f'<span style="color:#8892a4;font-size:0.75rem;margin-left:0.4rem;">{r["종목코드"]} | {r["시장"]}</span>'
+                f'</div>'
+                f'<b style="color:#ffd766;font-family:JetBrains Mono,monospace;">'
+                f'점수: {r["퀀트점수"]:.1f}</b>'
+                f'</div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;'
+                f'gap:0.3rem;margin-top:0.5rem;font-size:0.78rem;">'
+                f'<div><span style="color:#8892a4">현재가</span><br>'
+                f'<b style="font-family:JetBrains Mono,monospace;">{r["현재가"]:,}원</b></div>'
+                f'<div><span style="color:#8892a4">12개월수익</span><br>'
+                f'<b style="color:#4e9eff">{sign}{r["12개월수익률(%)"]}%</b></div>'
+                f'<div><span style="color:#8892a4">MA20이격</span><br>'
+                f'<b style="color:{mc}">{r["MA20이격(%)"]:+.1f}%</b></div>'
+                f'<div><span style="color:#8892a4">MA60이격</span><br>'
+                f'<b style="color:#8892a4">{r["MA60이격(%)"]:+.1f}%</b></div>'
+                f'<div><span style="color:#8892a4">대량거래</span><br>'
+                f'<b>{r["대량거래"]}</b></div>'
+                f'<div><span style="color:#8892a4">거래감소</span><br>'
+                f'<b>{r["거래감소"]}</b></div>'
+                f'</div></div>',
+                unsafe_allow_html=True)
+
+    # ── 일반 종목 섹션 ────────────────────────────────────────
+    if n_records:
+        st.markdown(f"### 📊 일반 종목 ({len(n_records)}개)")
+
+    # data_editor (A급 + 일반 통합)
     st.markdown("#### 📋 종목 선택 후 일괄 추가")
-    df_edit = df_show.copy()
+    display_cols = ["종목명","종목코드","시장","현재가","퀀트점수",
+                    "12개월수익률(%)","MA20이격(%)","MA근접","대량거래","거래감소"]
+    avail = [c for c in display_cols if c in df_show.columns]
+    df_edit = df_show[avail].copy()
     df_edit.insert(0, "선택", False)
+    df_edit.insert(0, "등급", df_show["is_a_grade"].map({True:"🔥 A급", False:"일반"}))
+
     edited = st.data_editor(
         df_edit,
         column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
@@ -811,18 +959,25 @@ def page_quant(username: str):
         use_container_width=True, hide_index=True, key="quant_editor",
     )
     sel = edited[edited["선택"] == True]
-    st.caption(f"{len(sel)}개 선택됨")
+    st.caption(f"{len(sel)}개 선택 (🔥 A급: {len(sel[sel['등급']=='🔥 A급'])}개)")
+
     if st.button(f"➕ 선택한 {len(sel)}개 관심종목에 추가", type="primary",
                  disabled=len(sel)==0, key="quant_bulk"):
         added, today = 0, datetime.now().strftime("%Y-%m-%d")
         for _, row in sel.iterrows():
-            cur_p = float(get_price(row["종목코드"]) or row["현재가"])
-            r = add_to_watchlist(username=username, ticker=row["종목코드"], name=row["종목명"],
+            matched = next((r for r in records if r["종목코드"]==row["종목코드"]), None)
+            if not matched: continue
+            cur_p = float(get_price(matched["종목코드"]) or matched["현재가"])
+            r2 = add_to_watchlist(
+                username=username, ticker=matched["종목코드"], name=matched["종목명"],
                 source="퀀트", entry=int(cur_p), target=int(cur_p*1.20),
-                stoploss=int(cur_p*0.93), market=row.get("시장",""),
-                scan_date=today, base_price=cur_p)
-            if r in ("added","updated"): added += 1
+                stoploss=int(cur_p*0.93), market=matched.get("시장",""),
+                scan_date=today, base_price=cur_p,
+            )
+            if r2 in ("added","updated"): added += 1
         st.success(f"✅ {added}개 관심종목에 추가! → [🗄️ 관심종목] 탭 확인")
+    # 슈퍼시그널 연동
+    st.session_state["quant_results"] = [{"종목코드":r["종목코드"],"종목명":r["종목명"]} for r in records]
 
 
 def page_swing(username: str):
@@ -946,9 +1101,11 @@ def page_swing(username: str):
                     json.dump(df_out.to_dict("records"),_f,ensure_ascii=False,indent=2)
                 st.success(f"✅ {len(df_out)}개 종목 발굴!")
             else:
-                st.warning("조건에 맞는 종목이 없습니다.")
+                st.info("📭 조건에 맞는 종목이 없습니다. 시장 휴장일이거나 조건을 완화해 보세요.")
         except Exception as e:
-            st.error(f"오류: {e}")
+            st.warning("⚠️ 현재 시장 데이터에 접근할 수 없습니다. 잠시 후 다시 시도해 주세요.")
+            with st.expander("상세 오류 (개발자용)"):
+                st.code(str(e))
 
     records = st.session_state.get("swing_records", [])
     if not records:
@@ -1189,7 +1346,7 @@ def page_vault(username: str):
     # 현재가 조회 + 수익률 계산
     rows, id_list = [], []
     for w in wl:
-        cur      = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))
+        cur      = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))  # 캐시됨
         base     = float(w.get("base_price", w.get("entry", cur)))
         ret_pct  = round((cur-base)/base*100, 2) if base else 0.0
         is_act   = bool(w.get("is_active", w.get("morning_check", False)))
@@ -1226,18 +1383,16 @@ def page_vault(username: str):
         height=min(500, 60+len(rows)*38),
     )
 
-    # 모닝체크 상태 변경 즉시 저장
-    changed = False
+    # 모닝체크 상태 변경 즉시 저장 (rerun 없이 처리 — 깜빡임 방지)
     for i, w in enumerate(wl):
         if i >= len(edited): break
         new_act = bool(edited.iloc[i]["🌅 모닝체크"])
         old_act = bool(w.get("is_active", w.get("morning_check", False)))
         if new_act != old_act:
-            w["is_active"]      = new_act
-            w["morning_check"]  = new_act
-            changed = True
-    if changed:
-        save_watchlist(username, wl)
+            w["is_active"]     = new_act
+            w["morning_check"] = new_act
+    # 항상 저장 (변경 여부 무관하게 editor 값 반영)
+    save_watchlist(username, wl)
 
     # 선택 삭제
     sel_mask = edited["☑️ 선택"] == True
@@ -1257,58 +1412,55 @@ def page_vault(username: str):
             st.rerun()
 
 
-def page_morning(username: str):
-    st.markdown("## 🌅 모닝 체크")
-
-    all_wl    = load_watchlist(username)
-    watchlist = [w for w in all_wl
-                 if w.get("is_active", w.get("morning_check", False))]
-
-    if not watchlist:
-        st.warning("감시 중인 종목이 없습니다.")
-        st.info("👉 [🗄️ 관심종목] 탭에서 [🌅 모닝체크] 열을 체크해 주세요.")
-        return
-
-    col_r, col_tg, col_i = st.columns([1, 1, 3])
+@st.fragment
+def _morning_realtime(watchlist: list, username: str):
+    """fragment: 새로고침 버튼 클릭 시에만 이 블록만 재실행 (전체 깜빡임 없음)"""
+    col_r, col_i = st.columns([1, 3])
     with col_r:
-        if st.button("🔄 새로고침", use_container_width=True):
-            st.cache_data.clear(); st.rerun()
-    with col_tg:
-        send_tg = st.button("📨 텔레그램 전송", use_container_width=True)
+        if st.button("🔄 새로고침", use_container_width=True, key="morning_refresh"):
+            st.cache_data.clear()
     with col_i:
         st.markdown(
             f'<div style="color:#8892a4;font-size:0.85rem;padding:0.5rem 0;">'
             f'감시 <b style="color:white">{len(watchlist)}개</b> | {datetime.now().strftime("%Y-%m-%d %H:%M")}'
             f'</div>', unsafe_allow_html=True)
 
-    # 데이터 수집
+    # 데이터 수집 (중복 실행 방지 + placeholder)
+    if st.session_state.get("morning_loading", False):
+        st.info("데이터를 불러오는 중입니다... 잠시만 기다려 주세요.")
+        return
+    placeholder = st.empty()
     rows = []
-    with st.spinner("현재가 조회 중..."):
-        for w in watchlist:
-            entry    = float(w.get("entry", 0))
-            target   = float(w.get("target", entry * 1.20))
-            stoploss = float(w.get("stoploss", entry * 0.93))
-            source   = w.get("source", "기타")
-            cur      = float(get_price(w["ticker"]) or entry)
-            df_h     = get_ohlcv_cached(w["ticker"], days=5)
-            low_t    = float(df_h["low"].iloc[-1])   if df_h is not None and len(df_h) > 0 else cur
-            open_t   = float(df_h["open"].iloc[-1])  if df_h is not None and len(df_h) > 0 else cur
-            prev_c   = float(df_h["close"].iloc[-2]) if df_h is not None and len(df_h) > 1 else cur
-            diff_pct = (cur - entry) / entry * 100 if entry else 0
-            chg_pct  = (cur - prev_c) / prev_c * 100 if prev_c else 0
-            gap_pct  = (open_t - prev_c) / prev_c * 100 if prev_c else 0
+    st.session_state["morning_loading"] = True
+    with placeholder.container():
+        with st.spinner("현재가 조회 중..."):
+            for w in watchlist:
+                entry    = float(w.get("entry", 0))
+                target   = float(w.get("target", entry * 1.20))
+                stoploss = float(w.get("stoploss", entry * 0.93))
+                source   = w.get("source", "기타")
+                cur      = float(get_price(w["ticker"]) or entry)
+                df_h     = get_ohlcv_cached(w["ticker"], days=5)
+                low_t    = float(df_h["low"].iloc[-1])   if df_h is not None and len(df_h) > 0 else cur
+                open_t   = float(df_h["open"].iloc[-1])  if df_h is not None and len(df_h) > 0 else cur
+                prev_c   = float(df_h["close"].iloc[-2]) if df_h is not None and len(df_h) > 1 else cur
+                diff_pct = (cur - entry) / entry * 100 if entry else 0
+                chg_pct  = (cur - prev_c) / prev_c * 100 if prev_c else 0
+                gap_pct  = (open_t - prev_c) / prev_c * 100 if prev_c else 0
 
-            if low_t <= entry:    status, pri, sc = "✅ 타점 도달", 0, "#00d4aa"
-            elif diff_pct <= 3:   status, pri, sc = "🔔 근접",     1, "#ffd766"
-            elif gap_pct > 5:     status, pri, sc = "⚠️ 갭상승",   3, "#ff4b6e"
-            else:                 status, pri, sc = "⏳ 대기",     2, "#8892a4"
+                if low_t <= entry:    status, pri, sc = "✅ 타점 도달", 0, "#00d4aa"
+                elif diff_pct <= 3:   status, pri, sc = "🔔 근접",     1, "#ffd766"
+                elif gap_pct > 5:     status, pri, sc = "⚠️ 갭상승",   3, "#ff4b6e"
+                else:                 status, pri, sc = "⏳ 대기",     2, "#8892a4"
 
-            rows.append({
-                "pri": pri, "status": status, "sc": sc,
-                "name": w["name"], "ticker": w["ticker"], "source": source,
-                "entry": entry, "target": target, "stoploss": stoploss,
-                "cur": cur, "diff_pct": diff_pct, "chg_pct": chg_pct,
-            })
+                rows.append({
+                    "pri": pri, "status": status, "sc": sc,
+                    "name": w["name"], "ticker": w["ticker"], "source": source,
+                    "entry": entry, "target": target, "stoploss": stoploss,
+                    "cur": cur, "diff_pct": diff_pct, "chg_pct": chg_pct,
+                })
+    placeholder.empty()  # 스피너 제거
+    st.session_state["morning_loading"] = False
     rows.sort(key=lambda x: x["pri"])
 
     # 상태 요약 배지
@@ -1332,11 +1484,11 @@ def page_morning(username: str):
     st.markdown("<div style='margin:0.8rem 0'></div>", unsafe_allow_html=True)
 
     # 텔레그램 전송
-    if send_tg:
+    if st.button("📨 텔레그램 전송", key="morning_tg"):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         msg = f"<b>🌅 모닝 체크 ({now_str})</b>\n감시 {len(rows)}개 종목\n\n"
         for r in rows:
-            sgn = "+" if r["chg_pct"] >= 0 else ""
+            sgn      = "+" if r["chg_pct"] >= 0 else ""
             src_icon = "🎯" if r["source"] == "스윙" else "📊"
             msg += (
                 f"{src_icon} [{r['source']}] <b>{r['name']}</b> | {r['status']}\n"
@@ -1347,21 +1499,21 @@ def page_morning(username: str):
         send_telegram(msg)
         st.success("✅ 텔레그램 전송 완료!")
 
-    # 종목 카드 (목표가/손절가 포함)
+    # 종목 카드
     src_colors = {"스윙": "#00d4aa", "퀀트": "#ffd766"}
     for r in rows:
-        bc   = r["sc"]
-        cc   = "#4e9eff" if r["chg_pct"] >= 0 else "#ff4b6e"
-        sgn  = "+" if r["chg_pct"] >= 0 else ""
-        dc   = "#00d4aa" if r["diff_pct"] <= 0 else ("#ffd766" if r["diff_pct"] <= 3 else "#8892a4")
-        sc   = src_colors.get(r["source"], "#8892a4")
+        bc    = r["sc"]
+        cc    = "#4e9eff" if r["chg_pct"] >= 0 else "#ff4b6e"
+        sgn   = "+" if r["chg_pct"] >= 0 else ""
+        dc    = "#00d4aa" if r["diff_pct"] <= 0 else ("#ffd766" if r["diff_pct"] <= 3 else "#8892a4")
+        sc    = src_colors.get(r["source"], "#8892a4")
         blink = "animation:pulse 1.2s ease-in-out infinite;" if r["pri"] == 0 else ""
+        tgt_pct = (r["target"] - r["entry"]) / r["entry"] * 100 if r["entry"] else 0
+        stp_pct = (r["stoploss"] - r["entry"]) / r["entry"] * 100 if r["entry"] else 0
 
         st.markdown(
             f'<div style="background:#1a1f2e;border:2px solid {bc};border-radius:14px;'
             f'padding:1rem 1.2rem;margin:0.4rem 0;{blink}">'
-
-            # 상단: 종목명 + 상태
             f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">'
             f'<div>'
             f'<span style="font-size:1.05rem;font-weight:700;">{r["name"]}</span>'
@@ -1372,49 +1524,34 @@ def page_morning(username: str):
             f'<span style="background:{bc}22;color:{bc};border-radius:8px;'
             f'padding:4px 14px;font-size:0.95rem;font-weight:700;">{r["status"]}</span>'
             f'</div>'
-
-            # 핵심 6가지 정보 (목표가/손절가 포함)
             f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:0.5rem;">'
-
-            # 1. 매수타점
             f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
             f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">💰 매수타점</div>'
             f'<div style="color:#ffd766;font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["entry"]:,.0f}</div>'
             f'</div>'
-
-            # 2. 현재가
             f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
             f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">📊 현재가</div>'
             f'<div style="color:{cc};font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["cur"]:,.0f}</div>'
             f'<div style="color:{cc};font-size:0.65rem;">{sgn}{r["chg_pct"]:.2f}%</div>'
             f'</div>'
-
-            # 3. 목표가
             f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
             f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">🎯 목표가</div>'
             f'<div style="color:#00d4aa;font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["target"]:,.0f}</div>'
-            f'<div style="color:#00d4aa;font-size:0.65rem;">+{(r["target"]-r["entry"])/r["entry"]*100:.1f}%</div>'
+            f'<div style="color:#00d4aa;font-size:0.65rem;">+{tgt_pct:.1f}%</div>'
             f'</div>'
-
-            # 4. 손절가
             f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
             f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">🛑 손절가</div>'
             f'<div style="color:#ff4b6e;font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["stoploss"]:,.0f}</div>'
-            f'<div style="color:#ff4b6e;font-size:0.65rem;">{(r["stoploss"]-r["entry"])/r["entry"]*100:.1f}%</div>'
+            f'<div style="color:#ff4b6e;font-size:0.65rem;">{stp_pct:.1f}%</div>'
             f'</div>'
-
-            # 5. 타점까지
             f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
             f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">📍 타점까지</div>'
             f'<div style="color:{dc};font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["diff_pct"]:+.2f}%</div>'
             f'</div>'
-
-            # 6. 상태
             f'<div style="background:{bc}18;border-radius:10px;padding:0.55rem;text-align:center;">'
             f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">🚦 상태</div>'
             f'<div style="color:{bc};font-size:1rem;font-weight:700;">{r["status"]}</div>'
             f'</div>'
-
             f'</div></div>',
             unsafe_allow_html=True)
 
@@ -1422,10 +1559,28 @@ def page_morning(username: str):
     st.caption("💡 종목 관리는 [🗄️ 관심종목] 탭의 [🌅 모닝체크] 열에서 하세요.")
 
 
+def page_morning(username: str):
+    st.markdown("## 🌅 모닝 체크")
+    all_wl    = load_watchlist(username)
+    watchlist = [w for w in all_wl
+                 if w.get("is_active", w.get("morning_check", False))]
+    if not watchlist:
+        st.warning("감시 중인 종목이 없습니다.")
+        st.info("👉 [🗄️ 관심종목] 탭에서 [🌅 모닝체크] 열을 체크해 주세요.")
+        return
+    # fragment 함수 호출 — 새로고침 클릭 시 이 블록만 재실행
+    _morning_realtime(watchlist, username)
+
+
 # ════════════════════════════════════════════════════════════
 #  메인
 # ════════════════════════════════════════════════════════════
 def main():
+    # 앱 초기화 (최초 1회)
+    if "app_initialized" not in st.session_state:
+        _init_data_dir()
+        st.session_state["app_initialized"] = True
+
     # 로그인 체크
     if "user" not in st.session_state:
         show_login()
@@ -1447,7 +1602,7 @@ def main():
         menu = st.radio("메뉴", [
             "📊 대시보드",
             "💼 내 포트폴리오",
-            "🧮 퀀트 스캐너",
+            "🧮 퀀트 스캐너 2차 정밀",
             "📈 스윙 매매",
             "🚀 슈퍼 시그널",
             "🗄️ 관심종목",
@@ -1477,7 +1632,7 @@ def main():
         page_dashboard(username)
     elif menu == "💼 내 포트폴리오":
         page_portfolio(username)
-    elif menu == "🧮 퀀트 스캐너":
+    elif menu == "🧮 퀀트 스캐너 2차 정밀":
         page_quant(username)
     elif menu == "📈 스윙 매매":
         page_swing(username)
