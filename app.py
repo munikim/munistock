@@ -33,97 +33,122 @@ st.set_page_config(
 # ── 전역 CSS ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;600;700;900&family=JetBrains+Mono:wght@400;600;700&display=swap');
 
-/* 기본 */
-html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
-.main .block-container { padding: 1rem 1rem 2rem; max-width: 100%; }
-
-/* 카드 */
-.card {
-    background: linear-gradient(135deg, #1a1f2e 0%, #16213e 100%);
-    border: 1px solid #2d3561;
-    border-radius: 16px;
-    padding: 1.2rem;
-    margin: 0.4rem 0;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+/* ── 기본 리셋 ── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, [class*="css"] {
+    font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color: #e2e8f0;
 }
-.card-profit { border-left: 4px solid #00d4aa; }
-.card-loss   { border-left: 4px solid #ff4b6e; }
-.card-info   { border-left: 4px solid #4e9eff; }
+.main .block-container {
+    padding: 0.8rem 0.8rem 3rem;
+    max-width: 100%;
+}
 
-/* 수치 */
+/* ── 카드 ── */
+.card {
+    background: #1e2535;
+    border: 1px solid #2d3748;
+    border-radius: 14px;
+    padding: 1rem 1.2rem;
+    margin: 0.35rem 0;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+.card:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+.card-profit { border-left: 4px solid #38bdf8; }
+.card-loss   { border-left: 4px solid #f87171; }
+.card-info   { border-left: 4px solid #818cf8; }
+.card-warn   { border-left: 4px solid #fbbf24; }
+
+/* ── 수치 폰트 ── */
 .big-num {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 2rem; font-weight: 700;
+    font-size: 1.9rem; font-weight: 700; letter-spacing: -0.5px;
 }
-.profit-color { color: #00d4aa; }
-.loss-color   { color: #ff4b6e; }
-.neutral-color{ color: #4e9eff; }
-.label        { color: #8892a4; font-size: 0.8rem; margin-bottom: 0.2rem; }
+.mono { font-family: 'JetBrains Mono', monospace; }
+.profit-color { color: #38bdf8; }
+.loss-color   { color: #f87171; }
+.gold-color   { color: #fbbf24; }
+.green-color  { color: #34d399; }
+.label { color: #94a3b8; font-size: 0.75rem; margin-bottom: 0.15rem; letter-spacing: 0.3px; }
 
-/* 알림바 */
+/* ── 알림바 ── */
 .alert-red {
-    background: linear-gradient(90deg, #ff4b6e22, #ff4b6e11);
-    border: 1px solid #ff4b6e;
-    border-radius: 10px; padding: 0.8rem 1rem;
-    color: #ff4b6e; font-weight: 600; margin: 0.3rem 0;
+    background: #f8717115; border: 1px solid #f87171;
+    border-radius: 10px; padding: 0.7rem 1rem;
+    color: #f87171; font-weight: 600; margin: 0.25rem 0;
     animation: pulse 1.5s ease-in-out infinite;
 }
 .alert-yellow {
-    background: linear-gradient(90deg, #ffd76622, #ffd76611);
-    border: 1px solid #ffd766;
-    border-radius: 10px; padding: 0.8rem 1rem;
-    color: #ffd766; font-weight: 600; margin: 0.3rem 0;
+    background: #fbbf2415; border: 1px solid #fbbf24;
+    border-radius: 10px; padding: 0.7rem 1rem;
+    color: #fbbf24; font-weight: 600; margin: 0.25rem 0;
 }
 .alert-green {
-    background: linear-gradient(90deg, #00d4aa22, #00d4aa11);
-    border: 1px solid #00d4aa;
-    border-radius: 10px; padding: 0.8rem 1rem;
-    color: #00d4aa; font-weight: 600; margin: 0.3rem 0;
+    background: #34d39915; border: 1px solid #34d399;
+    border-radius: 10px; padding: 0.7rem 1rem;
+    color: #34d399; font-weight: 600; margin: 0.25rem 0;
 }
-@keyframes pulse {
-    0%,100% { opacity:1; } 50% { opacity:0.6; }
-}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.55} }
+@keyframes blink { 50%{background:#f8717115} }
 
-/* 테이블 행 강조 */
-.blink-row { animation: blink 1s step-start infinite; }
-@keyframes blink { 50% { background: #ff4b6e22; } }
-
-/* 모바일 최적화 */
-@media (max-width: 768px) {
-    .big-num { font-size: 1.1rem; }
-    .main .block-container { padding: 0.3rem 0.3rem 1rem; }
-    .card { padding: 0.7rem; border-radius: 10px; }
-    /* 테이블 가로 스크롤 */
-    .stDataFrame { overflow-x: auto !important; }
-    /* Plotly 그래프 높이 축소 */
-    .js-plotly-plot { max-height: 220px; }
-    /* 버튼 터치 영역 확대 */
-    .stButton > button { min-height: 44px; font-size: 0.9rem; }
-    /* 사이드바 기본 숨김 */
-    [data-testid="stSidebar"] { min-width: 0 !important; }
-}
-@media (max-width: 480px) {
-    .big-num { font-size: 0.95rem; }
-    .label { font-size: 0.7rem; }
-}
-
-/* 버튼 */
+/* ── 버튼 ── */
 .stButton > button {
-    background: linear-gradient(135deg, #4e9eff, #2d3561);
-    color: white; border: none; border-radius: 10px;
-    font-weight: 600; width: 100%;
-    transition: all 0.2s;
+    background: linear-gradient(135deg, #6366f1, #4f46e5);
+    color: #fff; border: none; border-radius: 10px;
+    font-weight: 600; min-height: 42px;
+    transition: all 0.2s; letter-spacing: 0.2px;
 }
 .stButton > button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(78,158,255,0.4);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(99,102,241,0.5);
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #0ea5e9, #6366f1);
 }
 
-/* 사이드바 */
+/* ── 사이드바 ── */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0f1117 0%, #1a1f2e 100%);
+    background: #131929;
+    border-right: 1px solid #2d3748;
+}
+[data-testid="stSidebar"] .stRadio label {
+    font-size: 0.9rem; padding: 0.3rem 0;
+}
+
+/* ── 입력창 ── */
+.stTextInput input, .stNumberInput input, .stSelectbox select {
+    background: #1e2535 !important;
+    border: 1px solid #3d4a5e !important;
+    border-radius: 8px !important; color: #e2e8f0 !important;
+}
+
+/* ── data_editor ── */
+[data-testid="stDataEditor"] {
+    border: 1px solid #2d3748; border-radius: 10px;
+}
+
+/* ── 스크롤 스무스 ── */
+html { scroll-behavior: smooth; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: #131929; }
+::-webkit-scrollbar-thumb { background: #3d4a5e; border-radius: 3px; }
+
+/* ── 모바일 반응형 ── */
+@media (max-width: 768px) {
+    .big-num { font-size: 1.25rem; }
+    .main .block-container { padding: 0.4rem 0.4rem 2rem; }
+    .card { padding: 0.65rem 0.8rem; border-radius: 10px; }
+    .stDataFrame, [data-testid="stDataEditor"] { overflow-x: auto; font-size: 0.78rem; }
+    .stButton > button { min-height: 44px; font-size: 0.88rem; }
+}
+@media (max-width: 480px) {
+    .big-num { font-size: 1.05rem; }
+    .label { font-size: 0.68rem; }
+    .card { padding: 0.5rem 0.65rem; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -766,217 +791,210 @@ def page_portfolio(username: str):
 # ════════════════════════════════════════════════════════════
 def page_quant(username: str):
     st.markdown("## 🧮 퀀트 스캐너 2차 정밀")
-    st.info("💡 **스캔 최적 시간 안내** — 장 마감 후 오후 3시 30분 이후 실행 권장. 2차 정밀 필터로 A급 눌림목 종목을 우선 선별합니다.")
+    st.info("💡 **최적 실행 시간**: 장 마감 후 오후 3:30 이후 — 병렬 처리로 빠르게 분석합니다.")
 
     with st.expander("📐 2차 정밀 필터 기준", expanded=False):
         st.markdown("""
-        **🔥 A급 눌림목 조건 (모두 충족 시)**
-        - 현재가가 20일선 또는 60일선 기준 ±3% 이내 (지지선 근접)
-        - 최근 5일 내 평균 대비 300% 이상 대량 거래 발생
-        - 오늘 거래량이 대량 거래일보다 감소 (세력 보유 신호)
-
-        **일반 종목**: 퀀트 점수 기준 정렬 (모멘텀 60% - 변동성 20%)
+        **🔥 A급 눌림목 (3조건 모두 충족)**
+        - 현재가 ± MA20 또는 MA60의 **3% 이내** (지지선 근접)
+        - 최근 5일 내 **평균 거래량 300% 이상** 대량 거래 발생
+        - 오늘 거래량이 스파이크일보다 **감소** (세력 보유 신호)
         """)
 
-    market = st.selectbox("시장 선택", ["KOSPI", "KOSDAQ", "전체"])
-    top_n  = st.slider("분석 종목 수 (상위)", 10, 50, 20)
+    c1, c2, c3 = st.columns(3)
+    with c1: market = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"])
+    with c2: top_n  = st.slider("분석 종목 수", 10, 60, 30)
+    with c3: workers = st.slider("병렬 스레드", 5, 30, 15)
 
-    if st.button("🔍 퀀트 2차 정밀 스캔 시작", type="primary"):
-        with st.spinner("데이터 수집 및 2차 정밀 분석 중..."):
+    if st.button("⚡ 병렬 스캔 시작", type="primary"):
+        import FinanceDataReader as fdr
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        prog  = st.progress(0, text="종목 목록 수집 중...")
+        stat  = st.empty()
+        lock  = threading.Lock()
+        done  = [0]
+        results = []
+
+        # 종목 목록 수집
+        try:
+            markets = ["KOSPI","KOSDAQ"] if market=="전체" else [market]
+            tickers = []
+            for mkt in markets:
+                lst = fdr.StockListing(mkt)
+                lst.columns = [c.strip() for c in lst.columns]
+                code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
+                name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
+                amt_col  = next((c for c in lst.columns if c in ["Amount","Tvalue"]), None)
+                if not code_col: continue
+                lst[code_col] = lst[code_col].astype(str).str.zfill(6)
+                sample = lst.nlargest(100, amt_col) if amt_col else lst.head(100)
+                for _, row in sample.iterrows():
+                    tickers.append({
+                        "ticker": str(row[code_col]).zfill(6),
+                        "name":   str(row.get(name_col, "")),
+                        "market": mkt,
+                    })
+        except Exception as e:
+            st.warning(f"종목 목록 수집 실패: {e}")
+            return
+
+        total = len(tickers)
+        prog.progress(5, text=f"사전 필터: {total}개 종목 병렬 분석 시작...")
+
+        def analyze_one(t):
+            ticker = t["ticker"]
+            name   = t["name"]
+            mkt    = t["market"]
             try:
-                import FinanceDataReader as fdr
-                results = []
-                markets = ["KOSPI","KOSDAQ"] if market == "전체" else [market]
+                end   = datetime.now().strftime("%Y%m%d")
+                start = (datetime.now()-timedelta(days=400)).strftime("%Y%m%d")
+                df = fdr.DataReader(ticker, start, end)
+                if df is None or len(df) < 65: return None
+                for c in df.columns:
+                    cl = c.strip().lower()
+                    if cl in ("close","adj close"): df = df.rename(columns={c:"close"})
+                    elif cl == "volume":            df = df.rename(columns={c:"volume"})
+                df["close"]  = pd.to_numeric(df["close"],  errors="coerce")
+                df["volume"] = pd.to_numeric(df.get("volume", pd.Series([0]*len(df))), errors="coerce")
+                df = df.dropna(subset=["close"])
+                if len(df) < 65: return None
 
-                for mkt in markets:
-                    listing = fdr.StockListing(mkt)
-                    listing.columns = [c.strip() for c in listing.columns]
-                    code_col = next((c for c in listing.columns if c in ["Code","Symbol"]), None)
-                    name_col = next((c for c in listing.columns if c in ["Name","종목명"]), None)
-                    amt_col  = next((c for c in listing.columns if c in ["Amount","Tvalue"]), None)
-                    if not code_col: continue
-                    listing[code_col] = listing[code_col].astype(str).str.zfill(6)
-                    sample = listing.nlargest(120, amt_col) if amt_col else listing.head(120)
+                close  = df["close"]
+                volume = df["volume"]
+                cur_price = float(close.iloc[-1])
 
-                    for _, row in sample.iterrows():
-                        ticker = str(row[code_col]).zfill(6)
-                        name   = str(row.get(name_col, ticker))
-                        try:
-                            end   = datetime.now().strftime("%Y%m%d")
-                            start = (datetime.now()-timedelta(days=400)).strftime("%Y%m%d")
-                            df = fdr.DataReader(ticker, start, end)
-                            if df is None or len(df) < 65: continue
+                # 기본 퀀트 지표
+                momentum = (close.iloc[-1] / close.iloc[0] - 1) * 100
+                vol_20   = close.pct_change().rolling(20).std().iloc[-1] * 100
+                score    = momentum * 0.6 - vol_20 * 0.2
 
-                            # 컬럼 정규화
-                            for c in df.columns:
-                                cl = c.strip().lower()
-                                if cl in ("close","adj close"): df = df.rename(columns={c:"close"})
-                                elif cl == "volume":            df = df.rename(columns={c:"volume"})
-                            df["close"]  = pd.to_numeric(df["close"],  errors="coerce")
-                            df["volume"] = pd.to_numeric(df.get("volume", pd.Series([0]*len(df))), errors="coerce")
-                            df = df.dropna(subset=["close"])
-                            if len(df) < 65: continue
+                # 2차 정밀 필터
+                ma20 = close.rolling(20).mean().iloc[-1]
+                ma60 = close.rolling(60).mean().iloc[-1] if len(close)>=60 else ma20
+                near_ma20 = abs(cur_price-ma20)/ma20 <= 0.03 if ma20 else False
+                near_ma60 = abs(cur_price-ma60)/ma60 <= 0.03 if ma60 else False
+                near_ma   = near_ma20 or near_ma60
 
-                            close  = df["close"]
-                            volume = df["volume"]
+                vol_avg   = volume.rolling(20).mean().iloc[-6] if len(volume)>=21 else volume.mean()
+                recent5   = volume.iloc[-6:-1]
+                had_spike = bool((recent5 >= vol_avg*3.0).any()) if vol_avg and vol_avg>0 else False
+                today_vol = float(volume.iloc[-1]) if len(volume)>0 else 0
+                vol_dec   = today_vol < float(recent5.max()) if had_spike else False
+                is_a      = near_ma and had_spike and vol_dec
 
-                            # 기본 퀀트 점수
-                            momentum = (close.iloc[-1] / close.iloc[0] - 1) * 100
-                            vol_20   = close.pct_change().rolling(20).std().iloc[-1] * 100
-                            score    = momentum * 0.6 - vol_20 * 0.2
-                            cur_price = float(close.iloc[-1])
+                return {
+                    "is_a_grade":     is_a,
+                    "종목코드":       ticker,
+                    "종목명":         name,
+                    "시장":           mkt,
+                    "현재가":         int(cur_price),
+                    "12개월수익률(%)": round(momentum, 2),
+                    "변동성(%)":      round(vol_20, 2),
+                    "퀀트점수":       round(score, 2),
+                    "MA20이격(%)":    round((cur_price-ma20)/ma20*100, 2) if ma20 else 0,
+                    "MA60이격(%)":    round((cur_price-ma60)/ma60*100, 2) if ma60 else 0,
+                    "MA근접":         "✅" if near_ma else "❌",
+                    "대량거래":       "✅" if had_spike else "❌",
+                    "거래감소":       "✅" if vol_dec else "❌",
+                }
+            except Exception:
+                return None
+            finally:
+                with lock:
+                    done[0] += 1
+                    pct = int(5 + done[0]/total*90)
+                    if done[0] % 5 == 0:
+                        prog.progress(pct, text=f"분석 중 {done[0]}/{total} | 발굴: {len(results)}개")
 
-                            # ── 2차 정밀 필터 ─────────────────────────────
-                            ma20 = close.rolling(20).mean().iloc[-1]
-                            ma60 = close.rolling(60).mean().iloc[-1] if len(close) >= 60 else ma20
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(analyze_one, t): t for t in tickers}
+            for fut in as_completed(futs):
+                r = fut.result()
+                if r:
+                    with lock:
+                        results.append(r)
 
-                            # 조건 1: 현재가가 MA20 또는 MA60 ±3% 이내
-                            near_ma20 = abs(cur_price - ma20) / ma20 <= 0.03 if ma20 else False
-                            near_ma60 = abs(cur_price - ma60) / ma60 <= 0.03 if ma60 else False
-                            near_ma   = near_ma20 or near_ma60
+        prog.progress(100, text="분석 완료!")
+        stat.empty()
 
-                            # 조건 2: 최근 5일 내 평균 대비 300% 이상 대량 거래
-                            vol_avg   = volume.rolling(20).mean().iloc[-6] if len(volume) >= 21 else volume.mean()
-                            recent5   = volume.iloc[-6:-1]  # 최근 5일 (오늘 제외)
-                            had_spike = bool((recent5 >= vol_avg * 3.0).any()) if vol_avg and vol_avg > 0 else False
+        if results:
+            df_all = (pd.DataFrame(results)
+                      .sort_values(["is_a_grade","퀀트점수"], ascending=[False,False])
+                      .head(top_n).reset_index(drop=True))
+            df_all.index += 1
+            st.session_state["quant_records"] = df_all.to_dict("records")
+            st.session_state["quant_results"] = df_all[["종목코드","종목명"]].to_dict("records")
+            a_cnt = int(df_all["is_a_grade"].sum())
+            st.success(f"✅ {len(df_all)}개 분석 완료 | 🔥 A급 눌림목: {a_cnt}개")
+        else:
+            st.info("📭 조건에 맞는 종목이 없습니다. 시장 휴장일이거나 조건을 조정해 보세요.")
 
-                            # 조건 3: 오늘 거래량 < 스파이크 발생일 거래량 (감소 구간)
-                            today_vol = float(volume.iloc[-1]) if len(volume) > 0 else 0
-                            vol_decreasing = False
-                            if had_spike:
-                                spike_vol = float(recent5.max())
-                                vol_decreasing = today_vol < spike_vol
-
-                            # A급 눌림목 판정
-                            is_a_grade = near_ma and had_spike and vol_decreasing
-
-                            # MA 이격도 계산
-                            disp_ma20 = round((cur_price - ma20) / ma20 * 100, 2) if ma20 else 0
-                            disp_ma60 = round((cur_price - ma60) / ma60 * 100, 2) if ma60 else 0
-
-                            results.append({
-                                "is_a_grade":   is_a_grade,
-                                "종목코드":     ticker,
-                                "종목명":       name,
-                                "시장":         mkt,
-                                "현재가":       int(cur_price),
-                                "12개월수익률(%)": round(momentum, 2),
-                                "변동성(%)":    round(vol_20, 2),
-                                "퀀트점수":     round(score, 2),
-                                "MA20이격(%)":  disp_ma20,
-                                "MA60이격(%)":  disp_ma60,
-                                "MA근접":       "✅" if near_ma else "❌",
-                                "대량거래":     "✅" if had_spike else "❌",
-                                "거래감소":     "✅" if vol_decreasing else "❌",
-                            })
-                        except: continue
-
-                if results:
-                    df_all = pd.DataFrame(results)
-                    # A급 우선, 그 안에서 퀀트점수 내림차순
-                    df_sorted = df_all.sort_values(
-                        ["is_a_grade","퀀트점수"],
-                        ascending=[False, False]
-                    ).head(top_n).reset_index(drop=True)
-                    df_sorted.index += 1
-                    st.session_state["quant_records"]  = df_sorted.to_dict("records")
-                    st.session_state["quant_results"]  = df_sorted[["종목코드","종목명"]].to_dict("records")
-                    a_cnt = int(df_sorted["is_a_grade"].sum())
-                    st.success(f"✅ 총 {len(df_sorted)}개 분석 완료 | 🔥 A급 눌림목: {a_cnt}개")
-                else:
-                    st.warning("결과 없음")
-            except Exception as e:
-                st.error(f"오류: {e}")
-
-    # ── 결과 렌더링 (버튼 블록 바깥) ──────────────────────────
+    # ── 결과 표시 ──────────────────────────────────────────────
     records = st.session_state.get("quant_records", [])
     if not records:
         return
 
-    df_show = pd.DataFrame(records)
-    a_records = [r for r in records if r.get("is_a_grade")]
-    n_records = [r for r in records if not r.get("is_a_grade")]
+    df_show  = pd.DataFrame(records)
+    a_recs   = [r for r in records if r.get("is_a_grade")]
+    n_recs   = [r for r in records if not r.get("is_a_grade")]
+    src_gold = "#fbbf24"
 
-    # ── 🔥 A급 눌림목 섹션 ───────────────────────────────────
-    if a_records:
-        st.markdown(f"### 🔥 A급 눌림목 ({len(a_records)}개)")
-        st.markdown(
-            '<div style="background:linear-gradient(90deg,#ff4b6e22,#ffd76611);'
-            'border:1px solid #ffd766;border-radius:10px;padding:0.5rem 1rem;'
-            'font-size:0.85rem;color:#ffd766;margin-bottom:0.8rem;">'
-            '⚡ MA20/60 근접 + 대량거래 후 거래량 감소 — 3가지 조건 모두 충족한 최우선 후보</div>',
-            unsafe_allow_html=True)
-
-        for r in a_records:
-            sign = "+" if r["12개월수익률(%)"] >= 0 else ""
-            mc   = "#ffd766" if r["MA20이격(%)"] is not None and abs(r["MA20이격(%)"]) <= 3 else "#8892a4"
+    # A급 카드
+    if a_recs:
+        st.markdown(f"### 🔥 A급 눌림목 &nbsp;<span style='color:#fbbf24;font-size:0.9rem;'>({len(a_recs)}개)</span>", unsafe_allow_html=True)
+        for r in a_recs:
+            s_sign = "+" if r["12개월수익률(%)"]>=0 else ""
+            mc_col = "#38bdf8" if abs(r["MA20이격(%)"])<=3 else "#94a3b8"
             st.markdown(
-                f'<div style="background:#1a1f2e;border:2px solid #ffd766;'
-                f'border-radius:14px;padding:0.8rem 1rem;margin:0.3rem 0;">'
+                f'<div class="card card-warn">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
                 f'<div>'
-                f'<span style="font-size:0.9rem;">🔥</span>'
-                f'<b style="font-size:1rem;margin-left:0.3rem;">{r["종목명"]}</b>'
-                f'<span style="color:#8892a4;font-size:0.75rem;margin-left:0.4rem;">{r["종목코드"]} | {r["시장"]}</span>'
+                f'<span style="font-size:0.85rem;">🔥</span>'
+                f'<b style="font-size:0.98rem;margin-left:0.3rem;">{r["종목명"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.72rem;margin-left:0.4rem;">{r["종목코드"]} | {r["시장"]}</span>'
                 f'</div>'
-                f'<b style="color:#ffd766;font-family:JetBrains Mono,monospace;">'
-                f'점수: {r["퀀트점수"]:.1f}</b>'
+                f'<b class="mono gold-color">점수 {r["퀀트점수"]:.1f}</b>'
                 f'</div>'
-                f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;'
-                f'gap:0.3rem;margin-top:0.5rem;font-size:0.78rem;">'
-                f'<div><span style="color:#8892a4">현재가</span><br>'
-                f'<b style="font-family:JetBrains Mono,monospace;">{r["현재가"]:,}원</b></div>'
-                f'<div><span style="color:#8892a4">12개월수익</span><br>'
-                f'<b style="color:#4e9eff">{sign}{r["12개월수익률(%)"]}%</b></div>'
-                f'<div><span style="color:#8892a4">MA20이격</span><br>'
-                f'<b style="color:{mc}">{r["MA20이격(%)"]:+.1f}%</b></div>'
-                f'<div><span style="color:#8892a4">MA60이격</span><br>'
-                f'<b style="color:#8892a4">{r["MA60이격(%)"]:+.1f}%</b></div>'
-                f'<div><span style="color:#8892a4">대량거래</span><br>'
-                f'<b>{r["대량거래"]}</b></div>'
-                f'<div><span style="color:#8892a4">거래감소</span><br>'
-                f'<b>{r["거래감소"]}</b></div>'
-                f'</div></div>',
-                unsafe_allow_html=True)
+                f'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0.3rem;margin-top:0.5rem;font-size:0.75rem;">'
+                f'<div><div class="label">현재가</div><b class="mono">{r["현재가"]:,}</b></div>'
+                f'<div><div class="label">12개월수익</div><b class="profit-color">{s_sign}{r["12개월수익률(%)"]}%</b></div>'
+                f'<div><div class="label">MA20이격</div><b style="color:{mc_col}">{r["MA20이격(%)"]:+.1f}%</b></div>'
+                f'<div><div class="label">MA60이격</div><b class="mono">{r["MA60이격(%)"]:+.1f}%</b></div>'
+                f'<div><div class="label">대량거래</div><b>{r["대량거래"]}</b></div>'
+                f'<div><div class="label">거래감소</div><b>{r["거래감소"]}</b></div>'
+                f'</div></div>', unsafe_allow_html=True)
 
-    # ── 일반 종목 섹션 ────────────────────────────────────────
-    if n_records:
-        st.markdown(f"### 📊 일반 종목 ({len(n_records)}개)")
+    # 일반 종목 data_editor
+    if n_recs:
+        st.markdown(f"### 📊 일반 종목 &nbsp;<span style='color:#94a3b8;font-size:0.9rem;'>({len(n_recs)}개)</span>", unsafe_allow_html=True)
 
-    # data_editor (A급 + 일반 통합)
-    st.markdown("#### 📋 종목 선택 후 일괄 추가")
-    display_cols = ["종목명","종목코드","시장","현재가","퀀트점수",
-                    "12개월수익률(%)","MA20이격(%)","MA근접","대량거래","거래감소"]
-    avail = [c for c in display_cols if c in df_show.columns]
-    df_edit = df_show[avail].copy()
+    disp = ["종목명","종목코드","시장","현재가","퀀트점수","12개월수익률(%)","MA근접","대량거래","거래감소"]
+    df_edit = df_show[[c for c in disp if c in df_show.columns]].copy()
     df_edit.insert(0, "선택", False)
-    df_edit.insert(0, "등급", df_show["is_a_grade"].map({True:"🔥 A급", False:"일반"}))
-
+    df_edit.insert(0, "등급", df_show["is_a_grade"].map({True:"🔥", False:"—"}))
     edited = st.data_editor(
         df_edit,
         column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
         disabled=[c for c in df_edit.columns if c != "선택"],
         use_container_width=True, hide_index=True, key="quant_editor",
     )
-    sel = edited[edited["선택"] == True]
-    st.caption(f"{len(sel)}개 선택 (🔥 A급: {len(sel[sel['등급']=='🔥 A급'])}개)")
-
-    if st.button(f"➕ 선택한 {len(sel)}개 관심종목에 추가", type="primary",
+    sel = edited[edited["선택"]==True]
+    st.caption(f"{len(sel)}개 선택 | 🔥 A급 {len(sel[sel['등급']=='🔥'])}개")
+    if st.button(f"➕ 선택 {len(sel)}개 관심종목 추가", type="primary",
                  disabled=len(sel)==0, key="quant_bulk"):
         added, today = 0, datetime.now().strftime("%Y-%m-%d")
         for _, row in sel.iterrows():
             matched = next((r for r in records if r["종목코드"]==row["종목코드"]), None)
             if not matched: continue
             cur_p = float(get_price(matched["종목코드"]) or matched["현재가"])
-            r2 = add_to_watchlist(
-                username=username, ticker=matched["종목코드"], name=matched["종목명"],
-                source="퀀트", entry=int(cur_p), target=int(cur_p*1.20),
-                stoploss=int(cur_p*0.93), market=matched.get("시장",""),
-                scan_date=today, base_price=cur_p,
-            )
-            if r2 in ("added","updated"): added += 1
-        st.success(f"✅ {added}개 관심종목에 추가! → [🗄️ 관심종목] 탭 확인")
-    # 슈퍼시그널 연동
+            rv = add_to_watchlist(username=username, ticker=matched["종목코드"],
+                name=matched["종목명"], source="퀀트", entry=int(cur_p),
+                target=int(cur_p*1.20), stoploss=int(cur_p*0.93),
+                market=matched.get("시장",""), scan_date=today, base_price=cur_p)
+            if rv in ("added","updated"): added += 1
+        st.success(f"✅ {added}개 관심종목 추가!")
     st.session_state["quant_results"] = [{"종목코드":r["종목코드"],"종목명":r["종목명"]} for r in records]
 
 
@@ -1323,91 +1341,124 @@ def page_super_signal(username: str):
 # ════════════════════════════════════════════════════════════
 def page_vault(username: str):
     st.markdown("## 🗄️ 관심종목")
-    st.markdown(
-        '<div class="card card-info" style="margin-bottom:1rem;">'
-        '<div style="color:#4e9eff;font-weight:700;">💡 관심종목 사용법</div>'
-        '<div style="color:#8892a4;font-size:0.83rem;margin-top:0.3rem;line-height:1.8;">'
-        '• 퀀트/스윙 스캐너에서 추가한 종목이 영구 저장됩니다<br>'
-        '• <b style="color:white">🌅 모닝체크</b> 열을 체크한 종목만 모닝체크에서 감시됩니다<br>'
-        '• <b style="color:white">☑️ 선택</b> 후 [선택 삭제] 버튼으로 일괄 삭제 가능합니다'
-        '</div></div>', unsafe_allow_html=True)
 
     wl = load_watchlist(username)
     if not wl:
-        st.info("관심종목이 없습니다. 퀀트 또는 스윙 스캐너에서 종목을 추가하세요.")
+        st.info("관심종목이 없습니다. 퀀트/스윙 스캐너에서 종목을 추가하세요.")
         return
 
     active_cnt = sum(1 for w in wl if w.get("is_active", w.get("morning_check", False)))
-    st.markdown(
-        f'<div style="color:#8892a4;font-size:0.85rem;margin-bottom:0.6rem;">'
-        f'총 <b style="color:white">{len(wl)}개</b> | 모닝체크 감시: <b style="color:#4e9eff">{active_cnt}개</b>'
-        f'</div>', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([3,1,1])
+    with c1:
+        st.markdown(
+            f'<div style="color:#94a3b8;font-size:0.85rem;padding:0.4rem 0;">'
+            f'총 <b style="color:#e2e8f0">{len(wl)}개</b> &nbsp;|&nbsp; '
+            f'감시 중 <b style="color:#38bdf8">{active_cnt}개</b></div>',
+            unsafe_allow_html=True)
+    with c2:
+        if st.button("✅ 전체 감시ON", use_container_width=True):
+            for w in wl: w["is_active"]=True; w["morning_check"]=True
+            save_watchlist(username, wl); st.rerun()
+    with c3:
+        if st.button("⏹ 전체 OFF", use_container_width=True):
+            for w in wl: w["is_active"]=False; w["morning_check"]=False
+            save_watchlist(username, wl); st.rerun()
 
-    # 현재가 조회 + 수익률 계산
-    rows, id_list = [], []
+    st.markdown("---")
+    src_colors = {"스윙":"#34d399","퀀트":"#fbbf24","수동":"#a78bfa"}
+    any_changed = False
+
     for w in wl:
-        cur      = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))  # 캐시됨
-        base     = float(w.get("base_price", w.get("entry", cur)))
-        ret_pct  = round((cur-base)/base*100, 2) if base else 0.0
-        is_act   = bool(w.get("is_active", w.get("morning_check", False)))
-        id_list.append(w["id"])
+        is_act  = bool(w.get("is_active", w.get("morning_check", False)))
+        src_col = src_colors.get(w.get("source","기타"), "#94a3b8")
+        cur     = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))
+        base    = float(w.get("base_price", w.get("entry", cur)))
+        ret_pct = round((cur-base)/base*100, 2) if base else 0.0
+        ret_col = "#38bdf8" if ret_pct >= 0 else "#f87171"
+        ret_sgn = "+" if ret_pct >= 0 else ""
+        border  = "#38bdf8" if is_act else "#2d3748"
+        badge   = '<span style="background:#38bdf822;color:#38bdf8;border-radius:5px;padding:1px 8px;font-size:0.68rem;margin-left:0.3rem;">🔴 감시중</span>' if is_act else ""
+
+        col_card, col_btn, col_del = st.columns([7, 2, 1])
+
+        with col_card:
+            st.markdown(
+                f'<div class="card" style="border-left:4px solid {src_col};'
+                f'border-top:1px solid {border};padding:0.65rem 0.9rem;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<div><b style="font-size:0.95rem;">{w["name"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.72rem;margin-left:0.4rem;">{w["ticker"]}</span>'
+                f'<span style="background:{src_col}22;color:{src_col};border-radius:5px;'
+                f'padding:1px 6px;font-size:0.68rem;margin-left:0.3rem;">{w.get("source","기타")}</span>'
+                f'{badge}</div>'
+                f'<div style="text-align:right;">'
+                f'<div class="mono" style="color:{ret_col};font-weight:700;font-size:0.95rem;">'
+                f'{ret_sgn}{ret_pct:.2f}%</div>'
+                f'<div style="color:{ret_col};font-size:0.7rem;">'
+                f'기준:{base:,.0f}→현재:{cur:,.0f}원</div>'
+                f'</div></div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;'
+                f'gap:0.25rem;margin-top:0.4rem;font-size:0.73rem;">'
+                f'<div><div class="label">타점</div>'
+                f'<b class="mono gold-color">{int(w.get("entry",0)):,}원</b></div>'
+                f'<div><div class="label">목표가</div>'
+                f'<b class="mono green-color">{int(w.get("target",0)):,}원</b></div>'
+                f'<div><div class="label">손절가</div>'
+                f'<b class="mono loss-color">{int(w.get("stoploss",0)):,}원</b></div>'
+                f'<div><div class="label">등록일</div>'
+                f'<b style="color:#94a3b8">{w.get("reg_date",w.get("add_date",""))}</b></div>'
+                f'</div></div>',
+                unsafe_allow_html=True)
+
+        with col_btn:
+            btn_label = "⏹ 감시중지" if is_act else "▶ 감시시작"
+            btn_style = "secondary" if is_act else "primary"
+            if st.button(btn_label, key=f"tog_{w['id']}", use_container_width=True):
+                for item in wl:
+                    if item["id"] == w["id"]:
+                        item["is_active"]     = not is_act
+                        item["morning_check"] = not is_act
+                save_watchlist(username, wl)
+                st.rerun()
+
+        with col_del:
+            if st.button("🗑️", key=f"del_{w['id']}", use_container_width=True):
+                save_watchlist(username, [x for x in wl if x["id"]!=w["id"]])
+                st.rerun()
+
+    # data_editor (선택 삭제)
+    st.markdown("---")
+    st.markdown("#### 📋 일괄 수익률 현황")
+    rows = []
+    for w in wl:
+        cur  = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))
+        base = float(w.get("base_price", w.get("entry", cur)))
         rows.append({
-            "🌅 모닝체크": is_act,
-            "☑️ 선택":    False,
-            "종목명":      w["name"],
-            "종목코드":    w["ticker"],
-            "출처":        w.get("source","기타"),
-            "등록일":      w.get("reg_date", w.get("add_date","")),
-            "기준가":      int(base),
-            "현재가":      int(cur),
-            "수익률(%)":   ret_pct,
-            "타점":        int(w.get("entry",0)),
-            "목표가":      int(w.get("target",0)),
-            "손절가":      int(w.get("stoploss",0)),
+            "☑️선택": False,
+            "감시":   "🔴" if w.get("is_active") else "⚪",
+            "종목명": w["name"],
+            "출처":   w.get("source","기타"),
+            "기준가": int(base),
+            "현재가": int(cur),
+            "수익률(%)": round((cur-base)/base*100,2) if base else 0,
         })
-
-    df_vault = pd.DataFrame(rows)
-    edited = st.data_editor(
-        df_vault,
-        column_config={
-            "🌅 모닝체크": st.column_config.CheckboxColumn("🌅 모닝체크", help="모닝체크 감시 포함"),
-            "☑️ 선택":    st.column_config.CheckboxColumn("☑️ 선택",    help="삭제할 종목 선택"),
-            "수익률(%)":   st.column_config.NumberColumn("수익률(%)", format="%.2f%%"),
-            "기준가":      st.column_config.NumberColumn("기준가", format="%d원"),
-            "현재가":      st.column_config.NumberColumn("현재가", format="%d원"),
-        },
-        disabled=["종목명","종목코드","출처","등록일","기준가","현재가","타점","목표가","손절가"],
-        use_container_width=True,
-        hide_index=True,
-        key="vault_editor",
-        height=min(500, 60+len(rows)*38),
-    )
-
-    # 모닝체크 상태 변경 즉시 저장 (rerun 없이 처리 — 깜빡임 방지)
-    for i, w in enumerate(wl):
-        if i >= len(edited): break
-        new_act = bool(edited.iloc[i]["🌅 모닝체크"])
-        old_act = bool(w.get("is_active", w.get("morning_check", False)))
-        if new_act != old_act:
-            w["is_active"]     = new_act
-            w["morning_check"] = new_act
-    # 항상 저장 (변경 여부 무관하게 editor 값 반영)
-    save_watchlist(username, wl)
-
-    # 선택 삭제
-    sel_mask = edited["☑️ 선택"] == True
-    n_sel    = int(sel_mask.sum())
-    col_info, col_del = st.columns([3,1])
-    with col_info:
-        st.caption(f"{n_sel}개 선택됨")
-        pos = sum(1 for r in rows if r["수익률(%)"]>0)
-        neg = sum(1 for r in rows if r["수익률(%)"]<0)
-        st.caption(f"수익 {pos}개 | 손실 {neg}개")
-    with col_del:
-        if st.button(f"🗑️ 선택 {n_sel}개 삭제", disabled=n_sel==0,
-                     type="primary", key="vault_del"):
-            ids_del = {id_list[i] for i, v in enumerate(sel_mask) if v}
-            save_watchlist(username, [w for w in wl if w["id"] not in ids_del])
+    if rows:
+        df_v = pd.DataFrame(rows)
+        edited = st.data_editor(
+            df_v,
+            column_config={
+                "☑️선택": st.column_config.CheckboxColumn("선택", default=False),
+                "수익률(%)": st.column_config.NumberColumn("수익률(%)", format="%.2f%%"),
+            },
+            disabled=["감시","종목명","출처","기준가","현재가"],
+            use_container_width=True, hide_index=True, key="vault_table",
+            height=min(400, 55+len(rows)*38),
+        )
+        sel_mask = edited["☑️선택"]==True
+        n_sel = int(sel_mask.sum())
+        if st.button(f"🗑️ 선택 {n_sel}개 삭제", disabled=n_sel==0, key="vault_bulk_del"):
+            sel_names = set(edited[sel_mask]["종목명"].tolist())
+            save_watchlist(username, [w for w in wl if w["name"] not in sel_names])
             st.success(f"✅ {n_sel}개 삭제 완료!")
             st.rerun()
 
