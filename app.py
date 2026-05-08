@@ -496,108 +496,123 @@ def show_notification_bar(username: str):
 # ════════════════════════════════════════════════════════════
 def page_dashboard(username: str):
     st.markdown("## 📊 대시보드")
-    # 보유 종목의 잘못된 realized_pnl 1회 리셋
+
     if fix_portfolio_realized(username):
         st.toast("📌 실현손익 데이터 정상화 완료")
-    portfolio = load_portfolio(username)
-    seed      = st.session_state.get("seed", 2_000_000)
 
+    portfolio = load_portfolio(username)
     if not portfolio:
         st.info("포트폴리오에 종목을 추가하면 대시보드가 활성화됩니다.")
         return
 
-    # 실현손익: 반드시 청산(매도) 처리된 항목만 합산
-    realized = sum(float(p.get("realized_pnl", 0)) for p in portfolio if p.get("status") == "청산")
-    rows       = []
-    total_cost = 0.0
-    total_cur  = 0.0
-
+    # 수치 계산
+    realized   = sum(float(p.get("realized_pnl",0)) for p in portfolio if p.get("status")=="청산")
+    rows, total_cost, total_cur = [], 0.0, 0.0
     for p in portfolio:
-        if p.get("status") == "청산":
-            continue
-        qty       = int(p.get("qty", 1))
-        buy_price = float(p.get("buy_price", 0))
-        cost      = float(p.get("total_amount", buy_price * qty))
-        cur       = float(get_price(p["ticker"]) or buy_price)  # 캐시됨 (180초)
+        if p.get("status") == "청산": continue
+        qty       = int(p.get("qty",1))
+        buy_price = float(p.get("buy_price",0))
+        cost      = float(p.get("total_amount", buy_price*qty))
+        cur       = float(get_price(p["ticker"]) or buy_price)
         val       = cur * qty
         pnl       = val - cost
-        pnl_pct   = pnl / cost * 100 if cost else 0
-        total_cost += cost
-        total_cur  += val
-        rows.append({**p, "cur_price": cur, "pnl": pnl, "pnl_pct": pnl_pct})
+        pnl_pct   = pnl/cost*100 if cost else 0
+        total_cost += cost; total_cur += val
+        rows.append({**p, "cur_price":cur, "pnl":pnl, "pnl_pct":pnl_pct})
 
-    unrealized    = total_cur - total_cost          # 미실현 손익
-    total_pnl     = unrealized + realized            # 총손익 = 미실현 + 실현
-    # 총수익률 = 총손익 / 총매수금액 * 100
-    total_pnl_pct = total_pnl / total_cost * 100 if total_cost else 0
+    unrealized    = total_cur - total_cost
+    total_pnl     = unrealized + realized
+    total_pnl_pct = total_pnl/TOTAL_SEED*100 if TOTAL_SEED else 0
 
-    # 카드 3개
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        cls = "profit-color" if unrealized >= 0 else "loss-color"
-        sign = "+" if unrealized >= 0 else ""
-        st.markdown(f"""
-        <div class="card {'card-profit' if unrealized>=0 else 'card-loss'}">
-            <div class="label">미실현 손익</div>
-            <div class="big-num {cls}">{sign}{unrealized:,.0f}원</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        cls = "profit-color" if realized >= 0 else "loss-color"
-        sign = "+" if realized >= 0 else ""
-        st.markdown(f"""
-        <div class="card {'card-profit' if realized>=0 else 'card-loss'}">
-            <div class="label">실현 손익</div>
-            <div class="big-num {cls}">{sign}{realized:,.0f}원</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        cls = "profit-color" if total_pnl >= 0 else "loss-color"
-        sign = "+" if total_pnl >= 0 else ""
-        st.markdown(f"""
-        <div class="card card-info">
-            <div class="label">총 수익률 (시드 대비)</div>
-            <div class="big-num {cls}">{sign}{total_pnl_pct:.2f}%</div>
-        </div>""", unsafe_allow_html=True)
+    def cc(v): return "#38bdf8" if v>=0 else "#f87171"
+    def sg(v): return "+" if v>=0 else ""
+    def bl(v): return f"border-left:4px solid {'#38bdf8' if v>=0 else '#f87171'};"
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    # 4대 KPI 카드
+    k1,k2,k3,k4 = st.columns(4)
+    with k1:
+        st.markdown(
+            f'<div class="card" style="border-left:4px solid #94a3b8;">'
+            f'<div class="label">💼 투자액</div>'
+            f'<div class="big-num mono" style="color:#e2e8f0;">{total_cost:,.0f}원</div>'
+            f'<div style="color:#94a3b8;font-size:0.75rem;margin-top:0.2rem;">'
+            f'시드 {total_cost/TOTAL_SEED*100:.1f}% 투입</div></div>',
+            unsafe_allow_html=True)
+    with k2:
+        st.markdown(
+            f'<div class="card" style="{bl(unrealized)}">'
+            f'<div class="label">📈 미실현 손익</div>'
+            f'<div class="big-num mono" style="color:{cc(unrealized)};">{sg(unrealized)}{unrealized:,.0f}원</div>'
+            f'<div style="color:{cc(unrealized)};font-size:0.75rem;margin-top:0.2rem;">'
+            f'{unrealized/total_cost*100:+.2f}% (투자 대비)</div></div>',
+            unsafe_allow_html=True)
+    with k3:
+        st.markdown(
+            f'<div class="card" style="{bl(realized)}">'
+            f'<div class="label">✅ 실현 손익</div>'
+            f'<div class="big-num mono" style="color:{cc(realized)};">{sg(realized)}{realized:,.0f}원</div>'
+            f'<div style="color:#94a3b8;font-size:0.75rem;margin-top:0.2rem;">확정 수익</div></div>',
+            unsafe_allow_html=True)
+    with k4:
+        st.markdown(
+            f'<div class="card" style="{bl(total_pnl_pct)}">'
+            f'<div class="label">🎯 총 수익률 (시드 기준)</div>'
+            f'<div class="big-num mono" style="color:{cc(total_pnl_pct)};font-size:1.9rem;">'
+            f'{sg(total_pnl_pct)}{total_pnl_pct:.2f}%</div>'
+            f'<div style="color:#94a3b8;font-size:0.75rem;margin-top:0.2rem;">'
+            f'시드 {TOTAL_SEED:,}원 기준</div></div>',
+            unsafe_allow_html=True)
 
-    # 수익률 파이 차트
+    st.markdown("<div style='margin:0.6rem 0'></div>", unsafe_allow_html=True)
+
+    # 차트
     if rows:
-        labels = [r["name"] for r in rows]
-        values = [r["cur_price"] * r["qty"] for r in rows]
-        colors = ["#00d4aa","#4e9eff","#ffd766","#ff4b6e","#a78bfa","#fb923c"]
-        fig = go.Figure(go.Pie(
-            labels=labels, values=values,
-            hole=0.6,
-            marker=dict(colors=colors[:len(labels)]),
-            textfont=dict(size=12),
-        ))
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            showlegend=True,
-            legend=dict(font=dict(color="#8892a4")),
-            margin=dict(t=10,b=10,l=10,r=10),
-            height=260,
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            labels = [r["name"] for r in rows]
+            values = [r["cur_price"]*int(r.get("qty",1)) for r in rows]
+            colors = ["#38bdf8","#34d399","#fbbf24","#f87171","#a78bfa","#fb923c"]
+            fig_p  = go.Figure(go.Pie(
+                labels=labels, values=values, hole=0.55,
+                marker=dict(colors=colors[:len(labels)]),
+                textfont=dict(size=11, color="#e2e8f0"),
+            ))
+            fig_p.update_layout(
+                title=dict(text="포트폴리오 구성", font=dict(color="#94a3b8",size=13)),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                legend=dict(font=dict(color="#94a3b8",size=11)),
+                margin=dict(t=40,b=10,l=10,r=10), height=230)
+            st.plotly_chart(fig_p, use_container_width=True)
+        with ch2:
+            pnls     = [r["pnl"] for r in rows]
+            bar_cols = ["#38bdf8" if p>=0 else "#f87171" for p in pnls]
+            fig_b    = go.Figure(go.Bar(
+                x=[r["name"] for r in rows], y=pnls, marker_color=bar_cols,
+                text=[f'{sg(p)}{p:,.0f}원' for p in pnls],
+                textposition="outside", textfont=dict(color="#e2e8f0", size=10),
+            ))
+            fig_b.update_layout(
+                title=dict(text="종목별 손익", font=dict(color="#94a3b8",size=13)),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(gridcolor="#2d3748", color="#94a3b8", tickfont=dict(size=10)),
+                xaxis=dict(color="#94a3b8", tickfont=dict(size=10)),
+                margin=dict(t=40,b=10,l=10,r=10), height=230, showlegend=False)
+            st.plotly_chart(fig_b, use_container_width=True)
 
-    # 브라우저 푸시 알림 JS
-    st.markdown("""
-    <script>
-    if ('Notification' in window && Notification.permission !== 'denied') {
-        Notification.requestPermission();
-    }
-    function pushAlert(title, body) {
-        if (Notification.permission === 'granted') {
-            new Notification(title, { body: body, icon: '📈' });
-        }
-    }
-    </script>
-    """, unsafe_allow_html=True)
+    # 시드 요약 바
+    remaining = TOTAL_SEED - total_cost + unrealized + realized
+    st.markdown(
+        f'<div class="card" style="border-left:4px solid #2d3748;">'
+        f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;'
+        f'gap:0.6rem;font-size:0.82rem;">'
+        f'<div><div class="label">💰 시드머니</div><b class="mono">{TOTAL_SEED:,}원</b></div>'
+        f'<div><div class="label">📊 투입률</div><b class="mono profit-color">{total_cost/TOTAL_SEED*100:.1f}%</b></div>'
+        f'<div><div class="label">💵 평가 자산</div><b class="mono">{remaining:,.0f}원</b></div>'
+        f'<div><div class="label">📅 기준일</div>'
+        f'<span style="color:#94a3b8">{datetime.now().strftime("%Y-%m-%d")}</span></div>'
+        f'</div></div>', unsafe_allow_html=True)
 
-# ════════════════════════════════════════════════════════════
-#  [2] 내 포트폴리오
-# ════════════════════════════════════════════════════════════
+
 def page_portfolio(username: str):
     st.markdown("## 💼 내 포트폴리오")
     portfolio = load_portfolio(username)
@@ -791,33 +806,27 @@ def page_portfolio(username: str):
 # ════════════════════════════════════════════════════════════
 def page_quant(username: str):
     st.markdown("## 🧮 퀀트 스캐너 2차 정밀")
-    st.info("💡 **최적 실행 시간**: 장 마감 후 오후 3:30 이후 — 병렬 처리로 빠르게 분석합니다.")
+    st.info("💡 장 마감 후 오후 3:30 이후 실행 권장. ThreadPoolExecutor 병렬처리로 빠르게 분석합니다.")
 
-    with st.expander("📐 2차 정밀 필터 기준", expanded=False):
+    with st.expander("📐 A급 눌림목 기준", expanded=False):
         st.markdown("""
-        **🔥 A급 눌림목 (3조건 모두 충족)**
-        - 현재가 ± MA20 또는 MA60의 **3% 이내** (지지선 근접)
-        - 최근 5일 내 **평균 거래량 300% 이상** 대량 거래 발생
-        - 오늘 거래량이 스파이크일보다 **감소** (세력 보유 신호)
+        - **MA 근접**: 현재가가 MA20 또는 MA60의 ±3% 이내  
+        - **대량거래**: 최근 5일 내 평균 거래량 300% 이상 발생  
+        - **거래감소**: 오늘 거래량 < 스파이크일 거래량 (세력 보유 신호)
         """)
 
     c1, c2, c3 = st.columns(3)
-    with c1: market = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"])
-    with c2: top_n  = st.slider("분석 종목 수", 10, 60, 30)
-    with c3: workers = st.slider("병렬 스레드", 5, 30, 15)
+    with c1: market  = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"])
+    with c2: top_n   = st.slider("분석 상위 종목", 10, 60, 30)
+    with c3: workers = st.slider("병렬 스레드", 5, 20, 10)
 
-    if st.button("⚡ 병렬 스캔 시작", type="primary"):
+    if st.button("⚡ 병렬 스캔 시작", type="primary", key="quant_scan_btn"):
         import FinanceDataReader as fdr
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import threading
 
-        prog  = st.progress(0, text="종목 목록 수집 중...")
-        stat  = st.empty()
-        lock  = threading.Lock()
-        done  = [0]
-        results = []
+        prog_bar = st.progress(0, text="종목 목록 수집 중...")
 
-        # 종목 목록 수집
+        # 종목 목록 수집 (메인 스레드)
         try:
             markets = ["KOSPI","KOSDAQ"] if market=="전체" else [market]
             tickers = []
@@ -831,26 +840,22 @@ def page_quant(username: str):
                 lst[code_col] = lst[code_col].astype(str).str.zfill(6)
                 sample = lst.nlargest(100, amt_col) if amt_col else lst.head(100)
                 for _, row in sample.iterrows():
-                    tickers.append({
-                        "ticker": str(row[code_col]).zfill(6),
-                        "name":   str(row.get(name_col, "")),
-                        "market": mkt,
-                    })
+                    tickers.append({"ticker": str(row[code_col]).zfill(6),
+                                    "name":   str(row.get(name_col,"")),
+                                    "market": mkt})
         except Exception as e:
             st.warning(f"종목 목록 수집 실패: {e}")
             return
 
         total = len(tickers)
-        prog.progress(5, text=f"사전 필터: {total}개 종목 병렬 분석 시작...")
+        prog_bar.progress(5, text=f"{total}개 종목 분석 시작...")
 
-        def analyze_one(t):
-            ticker = t["ticker"]
-            name   = t["name"]
-            mkt    = t["market"]
+        # ★ 순수 계산 함수 — Streamlit API 절대 호출 없음
+        def _analyze(t):
             try:
                 end   = datetime.now().strftime("%Y%m%d")
                 start = (datetime.now()-timedelta(days=400)).strftime("%Y%m%d")
-                df = fdr.DataReader(ticker, start, end)
+                df = fdr.DataReader(t["ticker"], start, end)
                 if df is None or len(df) < 65: return None
                 for c in df.columns:
                     cl = c.strip().lower()
@@ -861,63 +866,42 @@ def page_quant(username: str):
                 df = df.dropna(subset=["close"])
                 if len(df) < 65: return None
 
-                close  = df["close"]
-                volume = df["volume"]
-                cur_price = float(close.iloc[-1])
-
-                # 기본 퀀트 지표
-                momentum = (close.iloc[-1] / close.iloc[0] - 1) * 100
-                vol_20   = close.pct_change().rolling(20).std().iloc[-1] * 100
-                score    = momentum * 0.6 - vol_20 * 0.2
-
-                # 2차 정밀 필터
-                ma20 = close.rolling(20).mean().iloc[-1]
-                ma60 = close.rolling(60).mean().iloc[-1] if len(close)>=60 else ma20
-                near_ma20 = abs(cur_price-ma20)/ma20 <= 0.03 if ma20 else False
-                near_ma60 = abs(cur_price-ma60)/ma60 <= 0.03 if ma60 else False
-                near_ma   = near_ma20 or near_ma60
-
-                vol_avg   = volume.rolling(20).mean().iloc[-6] if len(volume)>=21 else volume.mean()
-                recent5   = volume.iloc[-6:-1]
-                had_spike = bool((recent5 >= vol_avg*3.0).any()) if vol_avg and vol_avg>0 else False
-                today_vol = float(volume.iloc[-1]) if len(volume)>0 else 0
-                vol_dec   = today_vol < float(recent5.max()) if had_spike else False
-                is_a      = near_ma and had_spike and vol_dec
-
+                close = df["close"]; vol = df["volume"]
+                cur   = float(close.iloc[-1])
+                mom   = (close.iloc[-1]/close.iloc[0]-1)*100
+                v20   = close.pct_change().rolling(20).std().iloc[-1]*100
+                score = mom*0.6 - v20*0.2
+                ma20  = close.rolling(20).mean().iloc[-1]
+                ma60  = close.rolling(60).mean().iloc[-1] if len(close)>=60 else ma20
+                nm20  = abs(cur-ma20)/ma20<=0.03 if ma20 else False
+                nm60  = abs(cur-ma60)/ma60<=0.03 if ma60 else False
+                near  = nm20 or nm60
+                va    = vol.rolling(20).mean().iloc[-6] if len(vol)>=21 else vol.mean()
+                r5    = vol.iloc[-6:-1]
+                spk   = bool((r5>=va*3.0).any()) if va and va>0 else False
+                tdv   = float(vol.iloc[-1]) if len(vol)>0 else 0
+                dec   = tdv < float(r5.max()) if spk else False
                 return {
-                    "is_a_grade":     is_a,
-                    "종목코드":       ticker,
-                    "종목명":         name,
-                    "시장":           mkt,
-                    "현재가":         int(cur_price),
-                    "12개월수익률(%)": round(momentum, 2),
-                    "변동성(%)":      round(vol_20, 2),
-                    "퀀트점수":       round(score, 2),
-                    "MA20이격(%)":    round((cur_price-ma20)/ma20*100, 2) if ma20 else 0,
-                    "MA60이격(%)":    round((cur_price-ma60)/ma60*100, 2) if ma60 else 0,
-                    "MA근접":         "✅" if near_ma else "❌",
-                    "대량거래":       "✅" if had_spike else "❌",
-                    "거래감소":       "✅" if vol_dec else "❌",
+                    "is_a_grade": near and spk and dec,
+                    "종목코드": t["ticker"], "종목명": t["name"], "시장": t["market"],
+                    "현재가": int(cur), "12개월수익률(%)": round(mom,2),
+                    "변동성(%)": round(v20,2), "퀀트점수": round(score,2),
+                    "MA20이격(%)": round((cur-ma20)/ma20*100,2) if ma20 else 0,
+                    "MA60이격(%)": round((cur-ma60)/ma60*100,2) if ma60 else 0,
+                    "MA근접": "✅" if near else "❌",
+                    "대량거래": "✅" if spk else "❌",
+                    "거래감소": "✅" if dec else "❌",
                 }
             except Exception:
                 return None
-            finally:
-                with lock:
-                    done[0] += 1
-                    pct = int(5 + done[0]/total*90)
-                    if done[0] % 5 == 0:
-                        prog.progress(pct, text=f"분석 중 {done[0]}/{total} | 발굴: {len(results)}개")
 
+        # 병렬 실행 — as_completed 순서로 메인 스레드에서만 progress 업데이트
+        results = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(analyze_one, t): t for t in tickers}
-            for fut in as_completed(futs):
-                r = fut.result()
-                if r:
-                    with lock:
-                        results.append(r)
+            futs = list(ex.map(_analyze, tickers))  # map은 순서 보장, UI 안 건드림
+        results = [r for r in futs if r]
 
-        prog.progress(100, text="분석 완료!")
-        stat.empty()
+        prog_bar.progress(100, text=f"완료! {len(results)}개 발굴")
 
         if results:
             df_all = (pd.DataFrame(results)
@@ -927,63 +911,56 @@ def page_quant(username: str):
             st.session_state["quant_records"] = df_all.to_dict("records")
             st.session_state["quant_results"] = df_all[["종목코드","종목명"]].to_dict("records")
             a_cnt = int(df_all["is_a_grade"].sum())
-            st.success(f"✅ {len(df_all)}개 분석 완료 | 🔥 A급 눌림목: {a_cnt}개")
+            st.success(f"✅ {len(df_all)}개 | 🔥 A급 눌림목: {a_cnt}개")
         else:
-            st.info("📭 조건에 맞는 종목이 없습니다. 시장 휴장일이거나 조건을 조정해 보세요.")
+            st.info("📭 조건에 맞는 종목이 없습니다.")
 
-    # ── 결과 표시 ──────────────────────────────────────────────
+    # ── 결과 렌더링 (스캔 버튼 바깥) ──────────────────────────
     records = st.session_state.get("quant_records", [])
     if not records:
         return
 
-    df_show  = pd.DataFrame(records)
-    a_recs   = [r for r in records if r.get("is_a_grade")]
-    n_recs   = [r for r in records if not r.get("is_a_grade")]
-    src_gold = "#fbbf24"
+    df_show = pd.DataFrame(records)
+    a_recs  = [r for r in records if r.get("is_a_grade")]
+    n_recs  = [r for r in records if not r.get("is_a_grade")]
 
-    # A급 카드
     if a_recs:
-        st.markdown(f"### 🔥 A급 눌림목 &nbsp;<span style='color:#fbbf24;font-size:0.9rem;'>({len(a_recs)}개)</span>", unsafe_allow_html=True)
+        st.markdown(f"### 🔥 A급 눌림목 <span style='color:#fbbf24;font-size:0.85rem;'>({len(a_recs)}개)</span>", unsafe_allow_html=True)
         for r in a_recs:
-            s_sign = "+" if r["12개월수익률(%)"]>=0 else ""
-            mc_col = "#38bdf8" if abs(r["MA20이격(%)"])<=3 else "#94a3b8"
+            ss = "+" if r["12개월수익률(%)"]>=0 else ""
+            mc = "#38bdf8" if abs(r["MA20이격(%)"])<=3 else "#94a3b8"
             st.markdown(
                 f'<div class="card card-warn">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                f'<div>'
-                f'<span style="font-size:0.85rem;">🔥</span>'
-                f'<b style="font-size:0.98rem;margin-left:0.3rem;">{r["종목명"]}</b>'
-                f'<span style="color:#94a3b8;font-size:0.72rem;margin-left:0.4rem;">{r["종목코드"]} | {r["시장"]}</span>'
-                f'</div>'
-                f'<b class="mono gold-color">점수 {r["퀀트점수"]:.1f}</b>'
-                f'</div>'
-                f'<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0.3rem;margin-top:0.5rem;font-size:0.75rem;">'
-                f'<div><div class="label">현재가</div><b class="mono">{r["현재가"]:,}</b></div>'
-                f'<div><div class="label">12개월수익</div><b class="profit-color">{s_sign}{r["12개월수익률(%)"]}%</b></div>'
-                f'<div><div class="label">MA20이격</div><b style="color:{mc_col}">{r["MA20이격(%)"]:+.1f}%</b></div>'
-                f'<div><div class="label">MA60이격</div><b class="mono">{r["MA60이격(%)"]:+.1f}%</b></div>'
+                f'<div><b style="font-size:0.97rem;">🔥 {r["종목명"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.72rem;margin-left:0.4rem;">{r["종목코드"]} | {r["시장"]}</span></div>'
+                f'<b class="mono gold-color">점수 {r["퀀트점수"]:.1f}</b></div>'
+                f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.3rem;margin-top:0.4rem;font-size:0.75rem;">'
+                f'<div><div class="label">현재가</div><b class="mono">{r["현재가"]:,}원</b></div>'
+                f'<div><div class="label">12개월수익</div><b class="profit-color">{ss}{r["12개월수익률(%)"]}%</b></div>'
+                f'<div><div class="label">MA20이격</div><b style="color:{mc}">{r["MA20이격(%)"]:+.1f}%</b></div>'
+                f'<div><div class="label">MA근접</div><b>{r["MA근접"]}</b></div>'
                 f'<div><div class="label">대량거래</div><b>{r["대량거래"]}</b></div>'
                 f'<div><div class="label">거래감소</div><b>{r["거래감소"]}</b></div>'
                 f'</div></div>', unsafe_allow_html=True)
 
-    # 일반 종목 data_editor
     if n_recs:
-        st.markdown(f"### 📊 일반 종목 &nbsp;<span style='color:#94a3b8;font-size:0.9rem;'>({len(n_recs)}개)</span>", unsafe_allow_html=True)
+        st.markdown(f"### 📊 일반 종목 <span style='color:#94a3b8;font-size:0.85rem;'>({len(n_recs)}개)</span>", unsafe_allow_html=True)
 
-    disp = ["종목명","종목코드","시장","현재가","퀀트점수","12개월수익률(%)","MA근접","대량거래","거래감소"]
-    df_edit = df_show[[c for c in disp if c in df_show.columns]].copy()
-    df_edit.insert(0, "선택", False)
-    df_edit.insert(0, "등급", df_show["is_a_grade"].map({True:"🔥", False:"—"}))
+    disp  = ["종목명","종목코드","시장","현재가","퀀트점수","12개월수익률(%)","MA근접","대량거래","거래감소"]
+    df_ed = df_show[[c for c in disp if c in df_show.columns]].copy()
+    df_ed.insert(0, "선택", False)
+    df_ed.insert(0, "등급", df_show["is_a_grade"].map({True:"🔥",False:"—"}))
     edited = st.data_editor(
-        df_edit,
+        df_ed,
         column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
-        disabled=[c for c in df_edit.columns if c != "선택"],
+        disabled=[c for c in df_ed.columns if c != "선택"],
         use_container_width=True, hide_index=True, key="quant_editor",
     )
     sel = edited[edited["선택"]==True]
-    st.caption(f"{len(sel)}개 선택 | 🔥 A급 {len(sel[sel['등급']=='🔥'])}개")
+    st.caption(f"{len(sel)}개 선택")
     if st.button(f"➕ 선택 {len(sel)}개 관심종목 추가", type="primary",
-                 disabled=len(sel)==0, key="quant_bulk"):
+                 disabled=len(sel)==0, key="quant_bulk_add"):
         added, today = 0, datetime.now().strftime("%Y-%m-%d")
         for _, row in sel.iterrows():
             matched = next((r for r in records if r["종목코드"]==row["종목코드"]), None)
@@ -994,7 +971,7 @@ def page_quant(username: str):
                 target=int(cur_p*1.20), stoploss=int(cur_p*0.93),
                 market=matched.get("시장",""), scan_date=today, base_price=cur_p)
             if rv in ("added","updated"): added += 1
-        st.success(f"✅ {added}개 관심종목 추가!")
+        st.success(f"✅ {added}개 추가!")
     st.session_state["quant_results"] = [{"종목코드":r["종목코드"],"종목명":r["종목명"]} for r in records]
 
 
@@ -1348,27 +1325,29 @@ def page_vault(username: str):
         return
 
     active_cnt = sum(1 for w in wl if w.get("is_active", w.get("morning_check", False)))
-    c1, c2, c3 = st.columns([3,1,1])
-    with c1:
+
+    # 상단 요약 + 소형 버튼
+    sc1, sc2, sc3 = st.columns([4, 1, 1])
+    with sc1:
         st.markdown(
-            f'<div style="color:#94a3b8;font-size:0.85rem;padding:0.4rem 0;">'
+            f'<div style="color:#94a3b8;font-size:0.85rem;padding:0.35rem 0;">'
             f'총 <b style="color:#e2e8f0">{len(wl)}개</b> &nbsp;|&nbsp; '
-            f'감시 중 <b style="color:#38bdf8">{active_cnt}개</b></div>',
+            f'모닝체크 감시 <b style="color:#38bdf8">{active_cnt}개</b></div>',
             unsafe_allow_html=True)
-    with c2:
-        if st.button("✅ 전체 감시ON", use_container_width=True):
+    with sc2:
+        if st.button("전체 ON", key="vault_all_on", use_container_width=True):
             for w in wl: w["is_active"]=True; w["morning_check"]=True
             save_watchlist(username, wl); st.rerun()
-    with c3:
-        if st.button("⏹ 전체 OFF", use_container_width=True):
+    with sc3:
+        if st.button("전체 OFF", key="vault_all_off", use_container_width=True):
             for w in wl: w["is_active"]=False; w["morning_check"]=False
             save_watchlist(username, wl); st.rerun()
 
     st.markdown("---")
     src_colors = {"스윙":"#34d399","퀀트":"#fbbf24","수동":"#a78bfa"}
-    any_changed = False
+    wl_changed = False
 
-    for w in wl:
+    for idx_w, w in enumerate(wl):
         is_act  = bool(w.get("is_active", w.get("morning_check", False)))
         src_col = src_colors.get(w.get("source","기타"), "#94a3b8")
         cur     = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))
@@ -1376,29 +1355,49 @@ def page_vault(username: str):
         ret_pct = round((cur-base)/base*100, 2) if base else 0.0
         ret_col = "#38bdf8" if ret_pct >= 0 else "#f87171"
         ret_sgn = "+" if ret_pct >= 0 else ""
-        border  = "#38bdf8" if is_act else "#2d3748"
-        badge   = '<span style="background:#38bdf822;color:#38bdf8;border-radius:5px;padding:1px 8px;font-size:0.68rem;margin-left:0.3rem;">🔴 감시중</span>' if is_act else ""
+        tid     = w["ticker"]  # 고유 키용
 
-        col_card, col_btn, col_del = st.columns([7, 2, 1])
+        # 체크박스 + 카드 + 삭제 버튼
+        col_chk, col_card, col_del = st.columns([0.5, 8.5, 1])
+
+        with col_chk:
+            # 고유 key: ticker 사용
+            new_act = st.checkbox(
+                "", value=is_act,
+                key=f"chk_{tid}_{idx_w}",
+                label_visibility="collapsed",
+                help="체크 시 모닝체크 실시간 감시"
+            )
+            if new_act != is_act:
+                for item in wl:
+                    if item["ticker"] == tid:
+                        item["is_active"]     = new_act
+                        item["morning_check"] = new_act
+                wl_changed = True
 
         with col_card:
+            badge = ('<span style="background:#38bdf822;color:#38bdf8;border-radius:4px;'
+                     'padding:1px 6px;font-size:0.67rem;margin-left:0.3rem;">🔴 감시중</span>'
+                     if is_act else "")
             st.markdown(
                 f'<div class="card" style="border-left:4px solid {src_col};'
-                f'border-top:1px solid {border};padding:0.65rem 0.9rem;">'
+                f'padding:0.6rem 0.9rem;margin:0;">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                f'<div><b style="font-size:0.95rem;">{w["name"]}</b>'
-                f'<span style="color:#94a3b8;font-size:0.72rem;margin-left:0.4rem;">{w["ticker"]}</span>'
-                f'<span style="background:{src_col}22;color:{src_col};border-radius:5px;'
-                f'padding:1px 6px;font-size:0.68rem;margin-left:0.3rem;">{w.get("source","기타")}</span>'
-                f'{badge}</div>'
-                f'<div style="text-align:right;">'
-                f'<div class="mono" style="color:{ret_col};font-weight:700;font-size:0.95rem;">'
+                f'<div style="min-width:0;flex:1;">'
+                f'<b style="font-size:0.93rem;">{w["name"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.7rem;margin-left:0.3rem;">{tid}</span>'
+                f'<span style="background:{src_col}22;color:{src_col};border-radius:4px;'
+                f'padding:1px 5px;font-size:0.67rem;margin-left:0.25rem;">{w.get("source","기타")}</span>'
+                f'{badge}'
+                f'</div>'
+                f'<div style="text-align:right;flex-shrink:0;margin-left:0.5rem;">'
+                f'<div class="mono" style="color:{ret_col};font-weight:700;font-size:0.9rem;">'
                 f'{ret_sgn}{ret_pct:.2f}%</div>'
-                f'<div style="color:{ret_col};font-size:0.7rem;">'
-                f'기준:{base:,.0f}→현재:{cur:,.0f}원</div>'
+                f'<div style="color:{ret_col};font-size:0.68rem;">'
+                f'{base:,.0f}→{cur:,.0f}원</div>'
                 f'</div></div>'
-                f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;'
-                f'gap:0.25rem;margin-top:0.4rem;font-size:0.73rem;">'
+                f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+                f'gap:0.2rem;margin-top:0.35rem;font-size:0.72rem;">'
                 f'<div><div class="label">타점</div>'
                 f'<b class="mono gold-color">{int(w.get("entry",0)):,}원</b></div>'
                 f'<div><div class="label">목표가</div>'
@@ -1406,61 +1405,26 @@ def page_vault(username: str):
                 f'<div><div class="label">손절가</div>'
                 f'<b class="mono loss-color">{int(w.get("stoploss",0)):,}원</b></div>'
                 f'<div><div class="label">등록일</div>'
-                f'<b style="color:#94a3b8">{w.get("reg_date",w.get("add_date",""))}</b></div>'
+                f'<span style="color:#94a3b8">{w.get("reg_date",w.get("add_date",""))}</span></div>'
                 f'</div></div>',
                 unsafe_allow_html=True)
 
-        with col_btn:
-            btn_label = "⏹ 감시중지" if is_act else "▶ 감시시작"
-            btn_style = "secondary" if is_act else "primary"
-            if st.button(btn_label, key=f"tog_{w['id']}", use_container_width=True):
-                for item in wl:
-                    if item["id"] == w["id"]:
-                        item["is_active"]     = not is_act
-                        item["morning_check"] = not is_act
-                save_watchlist(username, wl)
-                st.rerun()
-
         with col_del:
-            if st.button("🗑️", key=f"del_{w['id']}", use_container_width=True):
-                save_watchlist(username, [x for x in wl if x["id"]!=w["id"]])
+            st.markdown("<div style='margin-top:0.3rem'></div>", unsafe_allow_html=True)
+            if st.button("🗑️", key=f"del_{tid}_{idx_w}", use_container_width=True):
+                save_watchlist(username, [x for x in wl if x["ticker"] != tid])
                 st.rerun()
 
-    # data_editor (선택 삭제)
+    # 체크박스 변경 저장
+    if wl_changed:
+        save_watchlist(username, wl)
+        st.rerun()
+
+    # 수익률 요약 테이블
     st.markdown("---")
-    st.markdown("#### 📋 일괄 수익률 현황")
-    rows = []
-    for w in wl:
-        cur  = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))
-        base = float(w.get("base_price", w.get("entry", cur)))
-        rows.append({
-            "☑️선택": False,
-            "감시":   "🔴" if w.get("is_active") else "⚪",
-            "종목명": w["name"],
-            "출처":   w.get("source","기타"),
-            "기준가": int(base),
-            "현재가": int(cur),
-            "수익률(%)": round((cur-base)/base*100,2) if base else 0,
-        })
-    if rows:
-        df_v = pd.DataFrame(rows)
-        edited = st.data_editor(
-            df_v,
-            column_config={
-                "☑️선택": st.column_config.CheckboxColumn("선택", default=False),
-                "수익률(%)": st.column_config.NumberColumn("수익률(%)", format="%.2f%%"),
-            },
-            disabled=["감시","종목명","출처","기준가","현재가"],
-            use_container_width=True, hide_index=True, key="vault_table",
-            height=min(400, 55+len(rows)*38),
-        )
-        sel_mask = edited["☑️선택"]==True
-        n_sel = int(sel_mask.sum())
-        if st.button(f"🗑️ 선택 {n_sel}개 삭제", disabled=n_sel==0, key="vault_bulk_del"):
-            sel_names = set(edited[sel_mask]["종목명"].tolist())
-            save_watchlist(username, [w for w in wl if w["name"] not in sel_names])
-            st.success(f"✅ {n_sel}개 삭제 완료!")
-            st.rerun()
+    pos = sum(1 for w in wl if float(get_price(w["ticker"]) or w.get("base_price",0)) >= float(w.get("base_price", w.get("entry",1))))
+    neg = len(wl) - pos
+    st.caption(f"수익 {pos}개 | 손실 {neg}개")
 
 
 @st.fragment
