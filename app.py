@@ -336,6 +336,31 @@ def add_to_watchlist(username: str, ticker: str, name: str,
     return "added"
 
 
+@st.cache_data(ttl=7200, show_spinner=False)
+def get_market_tickers(market: str) -> list:
+    """KRX 직접 접근 없이 FDR로 종목 리스트 수집 (Cloud 호환)"""
+    import FinanceDataReader as fdr
+    rows = []
+    try:
+        lst = fdr.StockListing(market)
+        lst.columns = [c.strip() for c in lst.columns]
+        code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
+        name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
+        amt_col  = next((c for c in lst.columns if c in
+                         ["Amount","Tvalue","Marcap","시가총액"]), None)
+        if not code_col: return []
+        lst[code_col] = lst[code_col].astype(str).str.zfill(6)
+        sample = lst.nlargest(120, amt_col) if amt_col else lst.head(120)
+        for _, row in sample.iterrows():
+            code = str(row[code_col]).zfill(6)
+            name = str(row.get(name_col, code))
+            if code.isdigit() and name:
+                rows.append({"ticker": code, "name": name, "market": market})
+    except Exception:
+        pass
+    return rows
+
+
 def get_stock_list() -> pd.DataFrame:
     rows = []
     try:
@@ -821,30 +846,19 @@ def page_quant(username: str):
     with c3: workers = st.slider("병렬 스레드", 5, 20, 10)
 
     if st.button("⚡ 병렬 스캔 시작", type="primary", key="quant_scan_btn"):
-        import FinanceDataReader as fdr
+        import FinanceDataReader as fdr  # noqa
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         prog_bar = st.progress(0, text="종목 목록 수집 중...")
 
-        # 종목 목록 수집 (메인 스레드)
-        try:
-            markets = ["KOSPI","KOSDAQ"] if market=="전체" else [market]
-            tickers = []
-            for mkt in markets:
-                lst = fdr.StockListing(mkt)
-                lst.columns = [c.strip() for c in lst.columns]
-                code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
-                name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
-                amt_col  = next((c for c in lst.columns if c in ["Amount","Tvalue"]), None)
-                if not code_col: continue
-                lst[code_col] = lst[code_col].astype(str).str.zfill(6)
-                sample = lst.nlargest(100, amt_col) if amt_col else lst.head(100)
-                for _, row in sample.iterrows():
-                    tickers.append({"ticker": str(row[code_col]).zfill(6),
-                                    "name":   str(row.get(name_col,"")),
-                                    "market": mkt})
-        except Exception as e:
-            st.warning(f"종목 목록 수집 실패: {e}")
+        # 종목 목록 수집 — 캐시된 함수 사용 (KRX 직접 접근 방지)
+        markets = ["KOSPI","KOSDAQ"] if market=="전체" else [market]
+        tickers = []
+        for mkt in markets:
+            t = get_market_tickers(mkt)
+            tickers.extend(t)
+        if not tickers:
+            st.warning("⚠️ 종목 목록을 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.")
             return
 
         total = len(tickers)
@@ -994,31 +1008,16 @@ def page_swing(username: str):
     if st.button("🔍 스윙 스캔 시작", type="primary"):
         progress = st.progress(0, text="종목 수집 중...")
         try:
-            import FinanceDataReader as fdr
+            import FinanceDataReader as fdr  # noqa
             import ta
             markets = ["KOSPI","KOSDAQ"] if market_s == "전체" else [market_s]
             tickers_all = []
             for mkt in markets:
-                lst = fdr.StockListing(mkt)
-                lst.columns = [c.strip() for c in lst.columns]
-                code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
-                name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
-                amt_col  = next((c for c in lst.columns if c in ["Amount","Tvalue"]), None)
-                chg_col  = next((c for c in lst.columns if c in ["ChagesRatio","ChangeRate"]), None)
-                if not code_col: continue
-                lst[code_col] = lst[code_col].astype(str).str.zfill(6)
-                mask = pd.Series([True]*len(lst), index=lst.index)
-                if amt_col:
-                    lst[amt_col] = pd.to_numeric(lst[amt_col], errors="coerce").fillna(0)
-                    mask &= lst[amt_col] >= min_val
-                if chg_col:
-                    lst[chg_col] = pd.to_numeric(lst[chg_col], errors="coerce").fillna(0)
-                    mx = lst[chg_col].abs().max()
-                    lo, hi = min_chg*(100 if mx>1 else 1), max_chg*(100 if mx>1 else 1)
-                    mask &= (lst[chg_col]>=lo)&(lst[chg_col]<=hi)
-                for _, r in lst[mask].iterrows():
-                    tickers_all.append({"ticker":str(r[code_col]).zfill(6),
-                                        "name":str(r.get(name_col,"")),"market":mkt})
+                t_list = get_market_tickers(mkt)
+                tickers_all.extend(t_list)
+            if not tickers_all:
+                st.warning("⚠️ 종목 목록을 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.")
+                return
             progress.progress(10, text=f"사전 필터: {len(tickers_all)}개")
             results = []
             end   = datetime.now().strftime("%Y%m%d")
