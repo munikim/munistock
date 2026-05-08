@@ -1441,161 +1441,248 @@ def page_swing(username: str):
 
 def page_super_signal(username: str):
     st.markdown("## 🚀 슈퍼 시그널")
-    st.markdown("""
-    <div class="card" style="border-left:4px solid #ffd766; margin-bottom:1rem;">
-        <div style="color:#ffd766; font-weight:700; font-size:1rem;">⚡ 슈퍼 시그널이란?</div>
-        <div style="color:#8892a4; font-size:0.85rem; margin-top:0.3rem; line-height:1.7;">
-        퀀트 스캐너 + 스윙 매매 스캐너 <b style="color:white">두 시스템이 동시에 추천한 종목</b>만 표시합니다.<br>
-        두 가지 독립적인 전략이 모두 선택한 종목 → <b style="color:#ffd766">최우선 매수 후보</b>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="card card-warn" style="margin-bottom:1rem;">'
+        '<div style="color:#fbbf24;font-weight:700;">⚡ 슈퍼 시그널이란?</div>'
+        '<div style="color:#94a3b8;font-size:0.83rem;margin-top:0.3rem;line-height:1.7;">'
+        '퀀트 스캐너 + 스윙 스캐너 <b style="color:#e2e8f0">두 시스템이 동시에 추천한 종목</b>만 표시합니다.<br>'
+        '두 전략이 모두 선택 → <b style="color:#fbbf24">최우선 매수 후보</b>'
+        '</div></div>', unsafe_allow_html=True)
 
     quant_list = st.session_state.get("quant_results", [])
     swing_list = st.session_state.get("swing_results", [])
 
-    col1, col2 = st.columns(2)
-    with col1:
-        q_status = f"✅ {len(quant_list)}개 로드됨" if quant_list else "❌ 미실행"
-        st.markdown(f"""
-        <div class="card card-info" style="text-align:center;">
-            <div class="label">🧮 퀀트 스캐너</div>
-            <div style="font-weight:700; color:#4e9eff;">{q_status}</div>
-        </div>""", unsafe_allow_html=True)
-    with col2:
-        s_status = f"✅ {len(swing_list)}개 로드됨" if swing_list else "❌ 미실행"
-        st.markdown(f"""
-        <div class="card card-info" style="text-align:center;">
-            <div class="label">📈 스윙 스캐너</div>
-            <div style="font-weight:700; color:#4e9eff;">{s_status}</div>
-        </div>""", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        q_ok = f"✅ {len(quant_list)}개" if quant_list else "❌ 미실행"
+        q_col = "#34d399" if quant_list else "#f87171"
+        st.markdown(
+            f'<div class="card" style="text-align:center;">'
+            f'<div class="label">🧮 퀀트 스캐너</div>'
+            f'<b style="color:{q_col}">{q_ok}</b></div>',
+            unsafe_allow_html=True)
+    with c2:
+        s_ok = f"✅ {len(swing_list)}개" if swing_list else "❌ 미실행"
+        s_col = "#34d399" if swing_list else "#f87171"
+        st.markdown(
+            f'<div class="card" style="text-align:center;">'
+            f'<div class="label">📈 스윙 스캐너</div>'
+            f'<b style="color:{s_col}">{s_ok}</b></div>',
+            unsafe_allow_html=True)
 
     if not quant_list or not swing_list:
-        st.warning("⚠️ 퀀트 스캐너와 스윙 매매 스캐너를 **모두** 먼저 실행해 주세요!")
-        st.markdown("""
-        <div style="color:#8892a4; font-size:0.88rem; margin-top:0.5rem;">
-        1️⃣ 🧮 퀀트 스캐너 탭 → 스캔 실행<br>
-        2️⃣ 📈 스윙 매매 탭 → 스캔 실행<br>
-        3️⃣ 🚀 슈퍼 시그널 탭으로 돌아오기
-        </div>
-        """, unsafe_allow_html=True)
+        st.warning("⚠️ 퀀트 스캐너와 스윙 스캐너를 **모두** 먼저 실행해 주세요!")
         return
 
-    # 공통 종목 찾기
-    quant_codes = {q["종목코드"]: q["종목명"] for q in quant_list}
-    swing_codes = {s["종목코드"]: s["종목명"] for s in swing_list}
-    common_codes = set(quant_codes.keys()) & set(swing_codes.keys())
+    # 공통 종목 탐색
+    quant_codes = {str(q.get("종목코드","")).zfill(6): q.get("종목명","") for q in quant_list}
+    swing_codes = {str(s.get("종목코드","")).zfill(6): s.get("종목명","") for s in swing_list}
+    common      = set(quant_codes.keys()) & set(swing_codes.keys())
 
     st.markdown("---")
 
-    if not common_codes:
-        st.markdown("""
-        <div class="card" style="text-align:center; padding:2rem;">
-            <div style="font-size:2rem;">🔍</div>
-            <div style="color:#8892a4; margin-top:0.5rem;">
-                현재 두 스캐너에 공통 종목이 없습니다.<br>
-                <span style="font-size:0.85rem;">스캔 조건을 조정하거나 다음 거래일에 다시 확인해 보세요.</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    if not common:
+        st.markdown(
+            '<div class="card" style="text-align:center;padding:2rem;">'
+            '<div style="font-size:2rem;">🔍</div>'
+            '<div style="color:#94a3b8;margin-top:0.5rem;">'
+            '현재 두 스캐너에 공통 종목이 없습니다.<br>'
+            '<span style="font-size:0.83rem;">조건을 조정하거나 다음 거래일에 확인해 보세요.</span>'
+            '</div></div>', unsafe_allow_html=True)
         return
 
-    # 🎉 공통 종목 발견!
     st.balloons()
+    st.markdown(
+        f'<div style="text-align:center;margin:0.8rem 0;">'
+        f'<div style="font-size:2rem;">🎯</div>'
+        f'<div style="font-size:1.3rem;font-weight:900;color:#fbbf24;">'
+        f'슈퍼 시그널 {len(common)}개 발견!</div>'
+        f'<div style="color:#94a3b8;font-size:0.85rem;">두 시스템이 동시에 선택한 최우선 후보</div>'
+        f'</div>', unsafe_allow_html=True)
 
-    st.markdown(f"""
-    <div style="text-align:center; margin:1rem 0;">
-        <div style="font-size:2.5rem;">🎯</div>
-        <div style="font-size:1.4rem; font-weight:900; color:#ffd766; margin:0.3rem 0;">
-            슈퍼 시그널 {len(common_codes)}개 발견!
-        </div>
-        <div style="color:#8892a4; font-size:0.88rem;">
-            두 시스템이 동시에 선택한 최우선 매수 후보입니다
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    swing_full = {str(r.get("종목코드","")).zfill(6): r
+                  for r in st.session_state.get("swing_results_full", [])}
+    skipped = []
 
-    for code in common_codes:
+    for code in common:
         name = quant_codes[code]
-        cur  = get_price(code)
 
-        # 스윙 결과에서 상세 정보 가져오기
-        swing_detail = next((s for s in st.session_state.get("swing_results_full", [])
-                             if s.get("종목코드") == code), None)
+        # ── 현재가 조회 ──────────────────────────────────────
+        try:
+            cur = float(get_price(code) or 0)
+        except Exception:
+            cur = 0
 
-        entry    = swing_detail["매수타점"]    if swing_detail else 0
-        target   = swing_detail["목표가(+20%)"] if swing_detail else 0
-        stoploss = swing_detail["손절가(-7%)"]  if swing_detail else 0
-        rsi      = swing_detail["RSI"]          if swing_detail else "-"
-        rr       = swing_detail["손익비"]       if swing_detail else "-"
+        # ── 스윙 상세 데이터 (ATR 손절/저항 익절) ────────────
+        sw = swing_full.get(code, {})
+        entry    = sw.get("매수타점", cur)
+        target   = sw.get("목표가(저항)", sw.get("목표가(+20%)", int(cur*1.12)))
+        stoploss = sw.get("손절가(ATR)", sw.get("손절가(-7%)", int(cur*0.93)))
+        rsi      = sw.get("RSI", "-")
+        rr       = sw.get("손익비", "-")
+        atr_pct  = sw.get("ATR(%)", "-")
 
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #1a1f2e, #16213e);
-            border: 2px solid #ffd766;
-            border-radius: 16px;
-            padding: 1.2rem;
-            margin: 0.6rem 0;
-            box-shadow: 0 0 24px rgba(255,215,102,0.2);
-        ">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.8rem;">
-                <div>
-                    <span style="font-size:1.15rem; font-weight:900;">{name}</span>
-                    <span style="color:#8892a4; font-size:0.8rem; margin-left:0.5rem;">{code}</span>
-                    <span style="background:#ffd76622; color:#ffd766; border-radius:6px;
-                        padding:2px 10px; font-size:0.78rem; margin-left:0.5rem; font-weight:700;">
-                        ⚡ 슈퍼 시그널
-                    </span>
-                </div>
-                <div style="font-family:'JetBrains Mono',monospace; font-size:1.1rem;
-                    font-weight:700; color:#4e9eff;">
-                    {cur:,.0f}원
-                </div>
-            </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.5rem; font-size:0.85rem;">
-                <div><span style="color:#8892a4">매수타점</span><br>
-                    <b style="color:#ffd766">{entry:,.0f}원</b></div>
-                <div><span style="color:#00d4aa">목표 +20%</span><br>
-                    <b style="color:#00d4aa">{target:,.0f}원</b></div>
-                <div><span style="color:#ff4b6e">손절 -7%</span><br>
-                    <b style="color:#ff4b6e">{stoploss:,.0f}원</b></div>
-                <div><span style="color:#8892a4">RSI</span><br><b>{rsi}</b></div>
-                <div><span style="color:#8892a4">손익비</span><br><b>{rr}배</b></div>
-                <div><span style="color:#8892a4">현재가</span><br><b>{cur:,.0f}원</b></div>
-            </div>
-            <div style="margin-top:0.8rem; padding:0.6rem; background:#ffd76611;
-                border-radius:8px; font-size:0.82rem; color:#ffd766;">
-                💡 퀀트(모멘텀) + 스윙(기술적지표) 동시 추천 — 최우선 매수 검토
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        # ── 기술지표 재계산 (데이터 유효성 검사 포함) ─────────
+        extra_info = {}
+        try:
+            import FinanceDataReader as fdr
+            import ta
+            end   = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now()-timedelta(days=200)).strftime("%Y%m%d")
+
+            df = None
+            # Yahoo Finance 우선
+            try:
+                import yfinance as yf
+                suffix = ".KS"  # 기본 KOSPI
+                s_yf = start[:4]+"-"+start[4:6]+"-"+start[6:]
+                e_yf = end[:4]+"-"+end[4:6]+"-"+end[6:]
+                yf_df = yf.download(code+suffix, start=s_yf, end=e_yf,
+                                    progress=False, auto_adjust=True, timeout=8)
+                if yf_df is not None and len(yf_df) >= 60:
+                    yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
+                                     for c in yf_df.columns]
+                    df = yf_df
+                if df is None or len(df) < 60:
+                    # KOSDAQ 시도
+                    yf_df2 = yf.download(code+".KQ", start=s_yf, end=e_yf,
+                                         progress=False, auto_adjust=True, timeout=8)
+                    if yf_df2 is not None and len(yf_df2) >= 60:
+                        yf_df2.columns = [c.lower() if isinstance(c,str) else c[0].lower()
+                                          for c in yf_df2.columns]
+                        df = yf_df2
+            except Exception:
+                pass
+
+            if df is None or len(df) < 60:
+                df = fdr.DataReader(code, start, end)
+
+            # 데이터 유효성 검사
+            if df is None or df.empty or len(df) < 60:
+                skipped.append(f"{name}({code}): 데이터 부족")
+                continue
+
+            # 컬럼 정규화
+            col_map = {}
+            for c in df.columns:
+                cl = c.strip().lower()
+                if cl=="open":   col_map[c]="open"
+                elif cl=="high": col_map[c]="high"
+                elif cl=="low":  col_map[c]="low"
+                elif cl in("close","adj close"): col_map[c]="close"
+                elif cl=="volume": col_map[c]="volume"
+            df = df.rename(columns=col_map)
+            for col in ["open","high","low","close","volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna(subset=["close"])
+
+            if len(df) < 60:
+                skipped.append(f"{name}({code}): 유효 데이터 부족")
+                continue
+
+            # NaN/inf 처리 후 지표 계산
+            df["ma20"]  = df["close"].rolling(20).mean()
+            df["ma60"]  = df["close"].rolling(60).mean()
+            df["rsi_v"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+
+            # ATR 계산 (NaN 방지)
+            if all(c in df.columns for c in ["high","low","close"]):
+                atr_ind = ta.volatility.AverageTrueRange(
+                    df["high"], df["low"], df["close"], window=14)
+                df["atr"] = atr_ind.average_true_range()
+            else:
+                df["atr"] = float("nan")
+
+            # NaN → 0 치환
+            df = df.fillna(0).replace([float("inf"), float("-inf")], 0)
+
+            row = df.iloc[-1]
+            extra_info = {
+                "ma20":   float(row.get("ma20",0)),
+                "ma60":   float(row.get("ma60",0)),
+                "rsi_v":  float(row.get("rsi_v",0)),
+                "atr_v":  float(row.get("atr",0)),
+                "disp":   float(row["close"]/row["ma20"]*100) if row.get("ma20",0)>0 else 0,
+                "high20": float(df["high"].iloc[-20:].max()) if "high" in df.columns else 0,
+            }
+            # 재계산된 값으로 업데이트
+            if extra_info["atr_v"] > 0 and cur > 0:
+                stoploss = int(cur - extra_info["atr_v"]*2)
+            if extra_info["high20"] > cur:
+                target = int(extra_info["high20"])
+            rsi = round(extra_info["rsi_v"], 1)
+
+        except Exception as err:
+            skipped.append(f"{name}({code}): {type(err).__name__}")
+            # 에러여도 기본 정보로 카드는 표시
+
+        # ── 카드 렌더링 ───────────────────────────────────────
+        if cur == 0: cur = entry
+        diff_pct = (cur-entry)/entry*100 if entry else 0
+        dc = "#34d399" if diff_pct<=0 else ("#fbbf24" if diff_pct<=5 else "#94a3b8")
+        disp_txt = f"{extra_info.get('disp',0):.1f}%" if extra_info else "-"
+
+        st.markdown(
+            f'<div style="background:linear-gradient(135deg,#1e2535,#16213e);'
+            f'border:2px solid #fbbf24;border-radius:16px;padding:1.2rem;'
+            f'margin:0.6rem 0;box-shadow:0 0 24px rgba(251,191,36,0.2);">'
+
+            # 헤더
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">'
+            f'<div>'
+            f'<span style="font-size:1.1rem;font-weight:900;">{name}</span>'
+            f'<span style="color:#94a3b8;font-size:0.75rem;margin-left:0.4rem;">{code}</span>'
+            f'<span style="background:#fbbf2422;color:#fbbf24;border-radius:6px;'
+            f'padding:2px 10px;font-size:0.75rem;margin-left:0.4rem;font-weight:700;">⚡ 슈퍼 시그널</span>'
+            f'</div>'
+            f'<div style="font-family:JetBrains Mono,monospace;font-size:1.05rem;'
+            f'font-weight:700;color:#38bdf8;">{cur:,.0f}원</div>'
+            f'</div>'
+
+            # 핵심 지표 3×2
+            f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.5rem;font-size:0.82rem;">'
+            f'<div style="background:#12172a;border-radius:8px;padding:0.5rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.68rem;">💰 매수타점</div>'
+            f'<b style="color:#fbbf24;font-family:JetBrains Mono,monospace;">{entry:,.0f}원</b></div>'
+            f'<div style="background:#12172a;border-radius:8px;padding:0.5rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.68rem;">🎯 목표(저항)</div>'
+            f'<b style="color:#34d399;font-family:JetBrains Mono,monospace;">{target:,.0f}원</b></div>'
+            f'<div style="background:#12172a;border-radius:8px;padding:0.5rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.68rem;">🛑 손절(ATR×2)</div>'
+            f'<b style="color:#f87171;font-family:JetBrains Mono,monospace;">{stoploss:,.0f}원</b></div>'
+            f'<div style="background:#12172a;border-radius:8px;padding:0.5rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.68rem;">📊 RSI</div>'
+            f'<b style="color:#e2e8f0;">{rsi}</b></div>'
+            f'<div style="background:#12172a;border-radius:8px;padding:0.5rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.68rem;">📐 이격도</div>'
+            f'<b style="color:#e2e8f0;">{disp_txt}</b></div>'
+            f'<div style="background:#12172a;border-radius:8px;padding:0.5rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.68rem;">⚖️ 타점까지</div>'
+            f'<b style="color:{dc};">{diff_pct:+.1f}%</b></div>'
+            f'</div>'
+
+            # 안내
+            f'<div style="margin-top:0.8rem;padding:0.5rem;background:#fbbf2411;'
+            f'border-radius:8px;font-size:0.78rem;color:#fbbf24;">'
+            f'💡 퀀트(모멘텀) + 스윙(기술적) 동시 추천 — 최우선 매수 검토</div>'
+            f'</div>', unsafe_allow_html=True)
 
         # 관심종목 추가 버튼
         if st.button(f"🔖 {name} 관심종목 등록", key=f"super_{code}"):
-            watchlist = load_watchlist(username)
-            if any(w["ticker"] == code for w in watchlist):
-                st.warning("이미 관심종목에 있습니다!")
-            else:
-                watchlist.append({
-                    "id":        int(time.time()),
-                    "name":      name,
-                    "ticker":    code,
-                    "market":    "",
-                    "entry":     entry if entry else cur,
-                    "target":    target if target else int(cur * 1.20),
-                    "stoploss":  stoploss if stoploss else int(cur * 0.93),
-                    "scan_date": datetime.now().strftime("%Y-%m-%d"),
-                    "rsi":       rsi,
-                })
-                save_watchlist(username, watchlist)
-                st.success(f"✅ {name} 관심종목 등록 완료!")
+            rv = add_to_watchlist(username=username, ticker=code, name=name,
+                source="슈퍼시그널", entry=int(entry), target=int(target),
+                stoploss=int(stoploss), rsi=rsi, rr_ratio=rr,
+                scan_date=datetime.now().strftime("%Y-%m-%d"), base_price=float(cur))
+            st.success(f"✅ {name} {'추가' if rv=='added' else '업데이트'} 완료!")
 
-# ════════════════════════════════════════════════════════════
-#  [5] 모닝 체크
-# ════════════════════════════════════════════════════════════
-# ════════════════════════════════════════════════════════════
-#  [관심종목] 탭
-# ════════════════════════════════════════════════════════════
+    # 스킵된 종목 안내
+    if skipped:
+        with st.expander(f"ℹ️ 분석 제외 종목 ({len(skipped)}개)", expanded=False):
+            for s_msg in skipped:
+                st.caption(f"• 데이터 부족으로 {s_msg} 분석 제외")
+
+
 def page_vault(username: str):
     st.markdown("## 🗄️ 관심종목")
 
