@@ -1120,7 +1120,7 @@ def page_quant(username: str):
 
 def page_swing(username: str):
     st.markdown("## 📈 스윙 매매 스캐너")
-    st.info("💡 **스캔 최적 시간 안내** — 스캐너는 장이 마감된 오후 3시 30분 이후 ~ 저녁 시간에 돌리는 것이 가장 정확합니다. 장중에는 종가와 거래대금이 계속 변동하므로 정확한 눌림목 타점을 산출할 수 없습니다.")
+    st.info("💡 **최적 실행 시간**: 장 마감 후 오후 3:30 이후 권장. Yahoo Finance 우회로 Cloud에서도 안정적으로 작동합니다.")
 
     with st.expander("⚙️ 스캔 조건 설정", expanded=True):
         col1, col2, col3 = st.columns(3)
@@ -1128,181 +1128,315 @@ def page_swing(username: str):
             min_chg  = st.number_input("최소 상승률 (%)", value=2.0, step=0.5) / 100
             max_chg  = st.number_input("최대 상승률 (%)", value=30.0, step=1.0) / 100
         with col2:
-            min_val  = st.number_input("최소 거래대금 (억)", value=100, step=10) * 1e8
-            rsi_min  = st.number_input("RSI 하한", value=50, step=5)
+            min_val  = st.number_input("최소 거래대금 (억)", value=50, step=10,
+                                       help="낮출수록 중소형주 포함") * 1e8
+            rsi_min  = st.number_input("RSI 하한", value=45, step=5)
         with col3:
-            rsi_max  = st.number_input("RSI 상한", value=85, step=5)
+            rsi_max  = st.number_input("RSI 상한", value=80, step=5)
             market_s = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"])
 
-    if st.button("🔍 스윙 스캔 시작", type="primary"):
-        progress = st.progress(0, text="종목 수집 중...")
-        try:
-            import FinanceDataReader as fdr  # noqa
-            import ta
-            markets = ["KOSPI","KOSDAQ"] if market_s == "전체" else [market_s]
-            tickers_all = []
-            for mkt in markets:
-                t_list = get_market_tickers(mkt)
-                tickers_all.extend(t_list)
-            if not tickers_all:
-                st.error("❌ 종목 목록을 가져올 수 없습니다.")
-                st.info("💡 캐시 초기화 후 재시도: 브라우저 새로고침 → 다시 스캔")
-                return
-            st.caption(f"📋 {len(tickers_all)}개 종목 로드 (FDR/pykrx/내장 리스트 중 하나)")
-            progress.progress(10, text=f"사전 필터: {len(tickers_all)}개")
-            results = []
-            end   = datetime.now().strftime("%Y%m%d")
-            start = (datetime.now()-timedelta(days=250)).strftime("%Y%m%d")
-            for i, t in enumerate(tickers_all):
-                if i%5==0:
-                    pct = int(10+(i/max(len(tickers_all),1))*85)
-                    progress.progress(pct, text=f"스캔 {i+1}/{len(tickers_all)} | 발굴: {len(results)}개")
-                try:
-                    # Yahoo Finance 우선, 실패 시 FDR 폴백
-                    df = None
-                    yf_t = t.get("yf_ticker", t["ticker"])
-                    try:
-                        import yfinance as yf
-                        yf_df = yf.download(yf_t,
-                            start=start[:4]+"-"+start[4:6]+"-"+start[6:],
-                            end=end[:4]+"-"+end[4:6]+"-"+end[6:],
-                            progress=False, auto_adjust=True)
-                        if yf_df is not None and len(yf_df) >= 120:
-                            yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
-                                             for c in yf_df.columns]
-                            df = yf_df
-                    except Exception:
-                        pass
-                    if df is None:
-                        df = fdr.DataReader(t["ticker"], start, end)
-                    if df is None or len(df)<120: continue
-                    col_map={}
-                    for c in df.columns:
-                        cl=c.strip().lower()
-                        if cl=="open": col_map[c]="open"
-                        elif cl=="high": col_map[c]="high"
-                        elif cl=="low": col_map[c]="low"
-                        elif cl in("close","adj close"): col_map[c]="close"
-                        elif cl=="volume": col_map[c]="volume"
-                    df=df.rename(columns=col_map)
-                    for col in ["open","high","low","close","volume"]:
-                        if col not in df.columns: continue
-                        df[col]=pd.to_numeric(df[col],errors="coerce")
-                    df=df.dropna(subset=["open","high","low","close","volume"])
-                    df["trade_value"]=df["close"]*df["volume"]
-                    df["ma5"]=df["close"].rolling(5).mean()
-                    df["ma20"]=df["close"].rolling(20).mean()
-                    df["ma120"]=df["close"].rolling(120).mean()
-                    std=df["close"].rolling(20).std()
-                    df["bb_upper"]=df["ma20"]+2*std
-                    df["rsi"]=ta.momentum.RSIIndicator(df["close"],window=14).rsi()
-                    df["prev_close"]=df["close"].shift(1)
-                    df["prev_volume"]=df["volume"].shift(1)
-                    df["ma5_prev"]=df["ma5"].shift(1)
-                    df["ma20_prev"]=df["ma20"].shift(1)
-                    row=df.iloc[-1]
-                    pc=row["prev_close"]
-                    if pd.isna(pc) or pc==0: continue
-                    chg=(row["close"]-pc)/pc
-                    if not(min_chg<=chg<=max_chg): continue
-                    if row["trade_value"]<min_val: continue
-                    pv=row["prev_volume"]
-                    if pd.isna(pv) or pv==0 or row["volume"]<pv*0.7: continue
-                    body=row["close"]-row["open"]
-                    if body<=0 and chg<min_chg: continue
-                    if any(pd.isna([row["ma5"],row["ma20"],row["ma120"]])): continue
-                    if not(row["close"]>row["ma5"]>row["ma20"]): continue
-                    if row["close"]<=row["ma120"]: continue
-                    if pd.isna(row["bb_upper"]) or row["close"]<=row["bb_upper"]: continue
-                    if pd.isna(row["rsi"]) or not(rsi_min<=row["rsi"]<=rsi_max): continue
-                    disp=row["close"]/row["ma20"]
-                    if not(0.98<=disp<=1.20): continue
-                    ma5f=row["ma5_prev"] if not pd.isna(row["ma5_prev"]) else row["ma5"]
-                    ma20f=row["ma20_prev"] if not pd.isna(row["ma20_prev"]) else row["ma20"]
-                    entry=ma5f*0.975; target=entry*1.20; stoploss=max(entry*0.93,ma20f)
-                    rr=(target-entry)/(entry-stoploss) if entry>stoploss else 0
-                    results.append({
-                        "종목명":t["name"],"종목코드":t["ticker"],"시장":t["market"],
-                        "현재가":int(row["close"]),"등락률(%)":round(chg*100,2),
-                        "거래대금(억)":round(row["trade_value"]/1e8,1),
-                        "RSI":round(row["rsi"],1),"이격도(%)":round(disp*100,2),
-                        "손익비":round(rr,2),
-                        "매수타점":int(entry),"목표가(+20%)":int(target),"손절가(-7%)":int(stoploss),
-                    })
-                except: continue
-            progress.progress(100, text="스캔 완료!")
-            if results:
-                df_out=(pd.DataFrame(results).sort_values("손익비",ascending=False).reset_index(drop=True))
-                df_out.index+=1
-                st.session_state["swing_records"]=df_out.to_dict("records")
-                st.session_state["swing_results"]=df_out[["종목코드","종목명"]].to_dict("records")
-                st.session_state["swing_results_full"]=df_out.to_dict("records")
-                _tmp=user_file(username,"swing_temp.json")
-                with open(_tmp,"w",encoding="utf-8") as _f:
-                    json.dump(df_out.to_dict("records"),_f,ensure_ascii=False,indent=2)
-                st.success(f"✅ {len(df_out)}개 종목 발굴!")
-            else:
-                st.info("📭 조건에 맞는 종목이 없습니다. 시장 휴장일이거나 조건을 완화해 보세요.")
-        except Exception as e:
-            st.warning("⚠️ 현재 시장 데이터에 접근할 수 없습니다. 잠시 후 다시 시도해 주세요.")
-            with st.expander("상세 오류 (개발자용)"):
-                st.code(str(e))
+    st.caption("🔍 이격도 115% 이상 과열 종목 자동 제외 | ATR 기반 개별 손절/익절 적용")
 
+    if st.button("🔍 스윙 스캔 시작", type="primary", key="swing_scan_btn"):
+        import FinanceDataReader as fdr
+        import ta
+
+        progress = st.progress(0, text="종목 수집 중...")
+
+        markets = ["KOSPI","KOSDAQ"] if market_s=="전체" else [market_s]
+        tickers_all = []
+        for mkt in markets:
+            t_list = get_market_tickers(mkt)
+            tickers_all.extend(t_list)
+
+        if not tickers_all:
+            st.error("❌ 종목 목록을 가져올 수 없습니다.")
+            return
+
+        st.caption(f"📋 {len(tickers_all)}개 종목 분석 시작")
+        total   = len(tickers_all)
+        results = []
+
+        end   = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now()-timedelta(days=250)).strftime("%Y%m%d")
+
+        for i, t in enumerate(tickers_all):
+            if i % 5 == 0:
+                pct = int(5 + i/total*90)
+                progress.progress(pct, text=f"스캔 {i+1}/{total} | 발굴: {len(results)}개")
+            try:
+                # ── Yahoo Finance 우선, FDR 폴백 ──────────────
+                df = None
+                yf_t = t.get("yf_ticker", t["ticker"])
+                try:
+                    import yfinance as yf
+                    s_yf = start[:4]+"-"+start[4:6]+"-"+start[6:]
+                    e_yf = end[:4]+"-"+end[4:6]+"-"+end[6:]
+                    yf_df = yf.download(yf_t, start=s_yf, end=e_yf,
+                                        progress=False, auto_adjust=True, timeout=8)
+                    if yf_df is not None and len(yf_df) >= 120:
+                        yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
+                                         for c in yf_df.columns]
+                        df = yf_df
+                except Exception:
+                    pass
+                if df is None:
+                    df = fdr.DataReader(t["ticker"], start, end)
+                if df is None or len(df) < 120: continue
+
+                # ── 컬럼 정규화 ───────────────────────────────
+                col_map = {}
+                for c in df.columns:
+                    cl = c.strip().lower()
+                    if cl=="open":   col_map[c]="open"
+                    elif cl=="high": col_map[c]="high"
+                    elif cl=="low":  col_map[c]="low"
+                    elif cl in("close","adj close"): col_map[c]="close"
+                    elif cl=="volume": col_map[c]="volume"
+                df = df.rename(columns=col_map)
+                for col in ["open","high","low","close","volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna(subset=["open","high","low","close","volume"])
+                if len(df) < 120: continue
+
+                # ── 지표 계산 ─────────────────────────────────
+                df["trade_value"] = df["close"] * df["volume"]
+                df["ma5"]         = df["close"].rolling(5).mean()
+                df["ma20"]        = df["close"].rolling(20).mean()
+                df["ma60"]        = df["close"].rolling(60).mean()
+                df["ma120"]       = df["close"].rolling(120).mean()
+                std               = df["close"].rolling(20).std()
+                df["bb_upper"]    = df["ma20"] + 2*std
+                df["rsi"]         = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+                df["prev_close"]  = df["close"].shift(1)
+                df["prev_volume"] = df["volume"].shift(1)
+
+                # ── ATR 계산 (14일) ───────────────────────────
+                atr_ind = ta.volatility.AverageTrueRange(
+                    df["high"], df["low"], df["close"], window=14)
+                df["atr"] = atr_ind.average_true_range()
+
+                row = df.iloc[-1]
+                pc  = row["prev_close"]
+                if pd.isna(pc) or pc == 0: continue
+                chg = (row["close"] - pc) / pc
+
+                # ── 기본 필터 ─────────────────────────────────
+                if not (min_chg <= chg <= max_chg): continue
+                if row["trade_value"] < min_val:    continue
+                pv = row["prev_volume"]
+                if pd.isna(pv) or pv==0 or row["volume"] < pv*0.7: continue
+                body = row["close"] - row["open"]
+                if body <= 0 and chg < min_chg: continue
+                if any(pd.isna([row["ma5"],row["ma20"],row["ma60"],row["ma120"]])): continue
+                if not (row["close"] > row["ma5"] > row["ma20"]): continue
+                if row["close"] <= row["ma120"]: continue
+                if pd.isna(row["rsi"]) or not (rsi_min <= row["rsi"] <= rsi_max): continue
+
+                # ── 이격도 필터 (115% 이상 과열 제외) ────────
+                disp = row["close"] / row["ma20"]
+                if disp > 1.15: continue   # 과열 제외
+                if disp < 0.90: continue
+
+                # ── ATR 기반 손절/익절 ─────────────────────────
+                atr_val  = float(row["atr"]) if not pd.isna(row["atr"]) else row["close"]*0.03
+                cur_p    = float(row["close"])
+
+                # 손절: 현재가 - ATR*2.0
+                stoploss_atr = cur_p - atr_val * 2.0
+
+                # 익절: 최근 20일 최고가 (저항선)
+                high20   = float(df["high"].iloc[-20:].max())
+                target_r = high20 if high20 > cur_p else cur_p * 1.12
+
+                # 매수타점 (MA5 * 0.975)
+                ma5f  = float(df["ma5"].iloc[-2]) if not pd.isna(df["ma5"].iloc[-2]) else float(row["ma5"])
+                entry = ma5f * 0.975
+
+                # 손익비
+                rr = (target_r - entry) / (entry - stoploss_atr) if entry > stoploss_atr else 0
+                if rr < 1.0: continue  # 손익비 1 미만 제외
+
+                # ATR% (변동성 지수)
+                atr_pct = atr_val / cur_p * 100
+
+                results.append({
+                    "종목명":       t["name"],
+                    "종목코드":     t["ticker"],
+                    "시장":         t["market"],
+                    "현재가":       int(cur_p),
+                    "등락률(%)":    round(chg*100, 2),
+                    "거래대금(억)": round(row["trade_value"]/1e8, 1),
+                    "RSI":          round(float(row["rsi"]), 1),
+                    "이격도(%)":    round(disp*100, 2),
+                    "ATR":          round(atr_val, 0),
+                    "ATR(%)":       round(atr_pct, 2),
+                    "손익비":       round(rr, 2),
+                    "매수타점":     int(entry),
+                    "목표가(저항)": int(target_r),
+                    "손절가(ATR)":  int(stoploss_atr),
+                    "20일고가":     int(high20),
+                })
+            except Exception:
+                continue
+
+        progress.progress(100, text=f"✅ 스캔 완료!")
+
+        if results:
+            df_out = (pd.DataFrame(results)
+                      .sort_values("손익비", ascending=False)
+                      .reset_index(drop=True))
+            df_out.index += 1
+            st.session_state["swing_records"]      = df_out.to_dict("records")
+            st.session_state["swing_results"]      = df_out[["종목코드","종목명"]].to_dict("records")
+            st.session_state["swing_results_full"] = df_out.to_dict("records")
+            _tmp = user_file(username, "swing_temp.json")
+            with open(_tmp, "w", encoding="utf-8") as _f:
+                json.dump(df_out.to_dict("records"), _f, ensure_ascii=False, indent=2)
+            st.success(f"✅ {len(df_out)}개 종목 발굴! (이격도 과열 제외 · ATR 손절 적용)")
+        else:
+            st.info("📭 조건에 맞는 종목이 없습니다. 조건을 완화해 보세요.")
+
+    # ── 결과 렌더링 ──────────────────────────────────────────
     records = st.session_state.get("swing_records", [])
     if not records:
         return
 
-    df_out = pd.DataFrame(records)
-    st.markdown(f"### 📊 발굴 종목 {len(df_out)}개")
+    n = len(records)
+    st.markdown(f"### 📊 발굴 종목 {n}개")
+    st.caption("💡 ATR 기반 변동성 손절 | 20일 최고가 저항선 익절 | 이격도 115% 이상 제외")
 
-    # data_editor 체크박스
-    disp = ["종목명","종목코드","시장","현재가","등락률(%)","RSI","손익비","매수타점","목표가(+20%)","손절가(-7%)"]
-    avail = [c for c in disp if c in df_out.columns]
-    df_edit = df_out[avail].copy()
-    df_edit.insert(0, "선택", False)
-    edited = st.data_editor(
-        df_edit,
-        column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
-        disabled=[c for c in df_edit.columns if c != "선택"],
-        use_container_width=True, hide_index=True, key="swing_editor",
-    )
-    sel = edited[edited["선택"] == True]
-    n_sel, n_all = len(sel), len(df_out)
-
-    ba, bb = st.columns([3,1])
-    with ba:
-        st.caption(f"{n_sel}개 선택 / 전체 {n_all}개")
-        if st.button(f"➕ 선택한 {n_sel}개 관심종목에 추가", type="primary",
-                     disabled=n_sel==0, key="swing_sel_add"):
-            added, today = 0, datetime.now().strftime("%Y-%m-%d")
-            for _, row in sel.iterrows():
-                matched = next((r for r in records if r["종목코드"]==row["종목코드"]), None)
-                if not matched: continue
-                cur_p = float(matched.get("현재가", matched["매수타점"]))
-                r2 = add_to_watchlist(username=username, ticker=matched["종목코드"],
-                    name=matched["종목명"], source="스윙",
-                    entry=int(matched["매수타점"]), target=int(matched["목표가(+20%)"]),
-                    stoploss=int(matched["손절가(-7%)"]),
-                    rsi=float(matched.get("RSI",0)), rr_ratio=float(matched.get("손익비",0)),
-                    market=matched.get("시장",""), scan_date=today, base_price=cur_p)
-                if r2 in ("added","updated"): added += 1
-            st.success(f"✅ {added}개 관심종목 추가!")
-            if added > 0: st.balloons()
-    with bb:
-        if st.button("🔥 전체 추가", key="swing_all_add"):
+    # ── 전체 등록 버튼 ────────────────────────────────────────
+    fa, fb = st.columns([3,1])
+    with fa:
+        st.markdown(
+            f'<div style="background:linear-gradient(90deg,#f8717122,#fbbf2411);'
+            f'border:1px solid #fbbf24;border-radius:10px;padding:0.5rem 1rem;'
+            f'font-size:0.85rem;color:#fbbf24;">⚡ 전체 <b>{n}개</b> 관심종목에 저장</div>',
+            unsafe_allow_html=True)
+    with fb:
+        if st.button("🔥 전체 추가", key="swing_all_add", type="primary"):
             added, today = 0, datetime.now().strftime("%Y-%m-%d")
             for row_w in records:
                 cur_p = float(row_w.get("현재가", row_w["매수타점"]))
-                r2 = add_to_watchlist(username=username, ticker=row_w["종목코드"],
+                rv = add_to_watchlist(username=username, ticker=row_w["종목코드"],
                     name=row_w["종목명"], source="스윙",
-                    entry=int(row_w["매수타점"]), target=int(row_w["목표가(+20%)"]),
-                    stoploss=int(row_w["손절가(-7%)"]),
-                    rsi=float(row_w.get("RSI",0)), rr_ratio=float(row_w.get("손익비",0)),
-                    market=row_w.get("시장",""), scan_date=today,
-                    base_price=float(row_w.get("현재가", row_w["매수타점"])))
-                if r2 in ("added","updated"): added += 1
-            st.success(f"✅ 전체 {added}개 추가!")
+                    entry=int(row_w["매수타점"]),
+                    target=int(row_w["목표가(저항)"]),
+                    stoploss=int(row_w["손절가(ATR)"]),
+                    rsi=float(row_w.get("RSI",0)),
+                    rr_ratio=float(row_w.get("손익비",0)),
+                    market=row_w.get("시장",""), scan_date=today, base_price=cur_p)
+                if rv in ("added","updated"): added += 1
+            st.success(f"✅ {added}개 추가!")
             if added > 0: st.balloons()
+
+    st.markdown("---")
+
+    # ── 4열 카드 배치 ────────────────────────────────────────
+    cols_per_row = 4
+    for row_i in range(0, len(records), cols_per_row):
+        row_records = records[row_i: row_i + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for col, r in zip(cols, row_records):
+            pnl_col  = "#34d399" if r["등락률(%)"] > 0 else "#f87171"
+            pnl_sgn  = "+" if r["등락률(%)"] > 0 else ""
+            rr_col   = "#34d399" if r["손익비"] >= 2 else ("#fbbf24" if r["손익비"] >= 1.5 else "#94a3b8")
+            atr_col  = "#f87171" if r["ATR(%)"] > 4 else ("#fbbf24" if r["ATR(%)"] > 2 else "#34d399")
+
+            col.markdown(
+                f'<div style="background:#1e2535;border:1px solid #2d3748;'
+                f'border-top:3px solid {pnl_col};border-radius:12px;'
+                f'padding:0.65rem 0.6rem;margin:0.2rem 0;height:100%;">'
+
+                # 종목명 + 시장
+                f'<div style="font-size:0.82rem;font-weight:700;'
+                f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+                f'{r["종목명"]}</div>'
+                f'<div style="color:#94a3b8;font-size:0.65rem;margin-bottom:0.3rem;">'
+                f'{r["종목코드"]} | {r["시장"]}</div>'
+
+                # 현재가 + 등락
+                f'<div style="color:{pnl_col};font-family:JetBrains Mono,monospace;'
+                f'font-size:0.95rem;font-weight:700;">'
+                f'{r["현재가"]:,}</div>'
+                f'<div style="color:{pnl_col};font-size:0.68rem;margin-bottom:0.4rem;">'
+                f'{pnl_sgn}{r["등락률(%)"]}%</div>'
+
+                # 구분선
+                f'<div style="border-top:1px solid #2d3748;margin:0.3rem 0;"></div>'
+
+                # 타점
+                f'<div style="font-size:0.65rem;color:#94a3b8;">💰 타점</div>'
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:0.78rem;'
+                f'color:#fbbf24;font-weight:600;">{r["매수타점"]:,}</div>'
+
+                # 목표 (저항선)
+                f'<div style="font-size:0.65rem;color:#94a3b8;margin-top:0.2rem;">🎯 목표(저항)</div>'
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:0.78rem;'
+                f'color:#34d399;font-weight:600;">{r["목표가(저항)"]:,}</div>'
+
+                # ATR 손절
+                f'<div style="font-size:0.65rem;color:#94a3b8;margin-top:0.2rem;">🛑 손절(ATR×2)</div>'
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:0.78rem;'
+                f'color:#f87171;font-weight:600;">{r["손절가(ATR)"]:,}</div>'
+
+                # 하단 지표
+                f'<div style="border-top:1px solid #2d3748;margin:0.3rem 0;"></div>'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.65rem;">'
+                f'<span>RSI <b style="color:#e2e8f0">{r["RSI"]}</b></span>'
+                f'<span style="color:{rr_col}">손익비 {r["손익비"]}배</span>'
+                f'</div>'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.65rem;margin-top:0.1rem;">'
+                f'<span>이격 <b style="color:#e2e8f0">{r["이격도(%)"]}%</b></span>'
+                f'<span style="color:{atr_col}">ATR {r["ATR(%)"]:.1f}%</span>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+            # 개별 추가 버튼
+            if col.button("➕", key=f"sw_add_{r['종목코드']}_{row_i}",
+                          use_container_width=True, help=f"{r['종목명']} 관심종목 추가"):
+                cur_p = float(r.get("현재가", r["매수타점"]))
+                rv = add_to_watchlist(username=username, ticker=r["종목코드"],
+                    name=r["종목명"], source="스윙",
+                    entry=int(r["매수타점"]), target=int(r["목표가(저항)"]),
+                    stoploss=int(r["손절가(ATR)"]),
+                    rsi=float(r.get("RSI",0)), rr_ratio=float(r.get("손익비",0)),
+                    market=r.get("시장",""),
+                    scan_date=datetime.now().strftime("%Y-%m-%d"), base_price=cur_p)
+                st.toast(f"{'✅ 추가' if rv=='added' else '🔄 업데이트'}: {r['종목명']}")
+
+    # data_editor (선택 일괄 추가)
+    st.markdown("---")
+    st.markdown("#### 📋 선택 추가")
+    disp   = ["종목명","종목코드","시장","현재가","등락률(%)","RSI","이격도(%)","ATR(%)","손익비","매수타점","목표가(저항)","손절가(ATR)"]
+    df_ed  = pd.DataFrame(records)[[c for c in disp if c in pd.DataFrame(records).columns]].copy()
+    df_ed.insert(0, "선택", False)
+    edited = st.data_editor(
+        df_ed,
+        column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
+        disabled=[c for c in df_ed.columns if c != "선택"],
+        use_container_width=True, hide_index=True, key="swing_editor",
+    )
+    sel = edited[edited["선택"]==True]
+    if st.button(f"➕ 선택 {len(sel)}개 추가", disabled=len(sel)==0,
+                 type="primary", key="swing_sel_add"):
+        added, today = 0, datetime.now().strftime("%Y-%m-%d")
+        for _, row in sel.iterrows():
+            matched = next((r for r in records if r["종목코드"]==row["종목코드"]), None)
+            if not matched: continue
+            cur_p = float(matched.get("현재가", matched["매수타점"]))
+            rv = add_to_watchlist(username=username, ticker=matched["종목코드"],
+                name=matched["종목명"], source="스윙",
+                entry=int(matched["매수타점"]), target=int(matched["목표가(저항)"]),
+                stoploss=int(matched["손절가(ATR)"]),
+                rsi=float(matched.get("RSI",0)), rr_ratio=float(matched.get("손익비",0)),
+                market=matched.get("시장",""), scan_date=today, base_price=cur_p)
+            if rv in ("added","updated"): added += 1
+        st.success(f"✅ {added}개 추가!")
+        if added > 0: st.balloons()
 
 
 def page_super_signal(username: str):
