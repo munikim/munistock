@@ -336,29 +336,132 @@ def add_to_watchlist(username: str, ticker: str, name: str,
     return "added"
 
 
-@st.cache_data(ttl=7200, show_spinner=False)
+# ── 내장 종목 리스트 (최후 보루) ──────────────────────────────
+_KOSPI_TICKERS = [
+    ("005930","삼성전자"),("000660","SK하이닉스"),("373220","LG에너지솔루션"),
+    ("207940","삼성바이오로직스"),("005380","현대차"),("000270","기아"),
+    ("068270","셀트리온"),("005490","POSCO홀딩스"),("035420","NAVER"),
+    ("051910","LG화학"),("028260","삼성물산"),("012330","현대모비스"),
+    ("066570","LG전자"),("003550","LG"),("015760","한국전력"),
+    ("017670","SK텔레콤"),("086790","하나금융지주"),("055550","신한지주"),
+    ("105560","KB금융"),("316140","우리금융지주"),("003490","대한항공"),
+    ("009150","삼성전기"),("034730","SK"),("030200","KT"),
+    ("036570","엔씨소프트"),("035720","카카오"),("323410","카카오뱅크"),
+    ("259960","크래프톤"),("006400","삼성SDI"),("000100","유한양행"),
+    ("128940","한미약품"),("000720","현대건설"),("010130","고려아연"),
+    ("021240","코웨이"),("009540","한국조선해양"),("042660","한화오션"),
+    ("329180","현대중공업"),("267250","HD현대"),("003670","포스코퓨처엠"),
+    ("247540","에코프로비엠"),("086520","에코프로"),("002380","KCC"),
+    ("000810","삼성화재"),("032640","LG유플러스"),("078930","GS"),
+    ("071050","한국금융지주"),("139480","이마트"),("004170","신세계"),
+    ("011170","롯데케미칼"),("064350","현대로템"),("012450","한화에어로스페이스"),
+    ("004020","현대제철"),("000880","한화"),("001040","CJ"),
+    ("097950","CJ제일제당"),("033780","KT&G"),("002790","아모레퍼시픽"),
+    ("051900","LG생활건강"),("006800","미래에셋증권"),("016360","삼성증권"),
+    ("180640","한진칼"),("007310","오뚜기"),("004800","효성"),
+    ("028670","팬오션"),("000150","두산"),("241560","두산밥캣"),
+    ("034020","두산에너빌리티"),("047810","한국항공우주"),("272210","한화시스템"),
+    ("082740","한화엔진"),("010950","S-Oil"),("096770","SK이노베이션"),
+]
+_KOSDAQ_TICKERS = [
+    ("091990","셀트리온헬스케어"),("145020","휴젤"),("196170","알테오젠"),
+    ("214150","클래시스"),("263750","펄어비스"),("293930","카카오게임즈"),
+    ("039030","이오테크닉스"),("357780","솔브레인"),("058470","리노공업"),
+    ("064760","티씨케이"),("042700","한미반도체"),("089030","테크윙"),
+    ("035760","CJ ENM"),("122870","와이지엔터테인먼트"),("035900","JYP Ent"),
+    ("041510","에스엠"),("066970","엘앤에프"),("053800","안랩"),
+    ("237690","에스티팜"),("214450","파마리서치"),("048260","오스템임플란트"),
+    ("196300","에이비엘바이오"),("000250","삼천당제약"),("068760","셀트리온제약"),
+    ("095700","제넥신"),("140410","메지온"),("085660","차바이오텍"),
+    ("060310","3S"),("131970","두산테스나"),("108320","LX세미콘"),
+    ("078020","이베스트투자증권"),("047920","HLB제약"),("028300","HLB"),
+    ("096530","씨젠"),("145600","나노신소재"),("089590","제이시스메디칼"),
+    ("060850","티에스아이"),("025320","시노펙스"),("060160","지니언스"),
+    ("032540","TJ미디어"),("094970","제이엠티"),("036540","SFA반도체"),
+    ("078000","텔코웨어"),("025560","미래산업"),("950160","코오롱티슈진"),
+    ("183300","코미팜"),("115180","큐리언트"),("290690","성우테크론"),
+    ("065620","고려신용정보"),("041190","우리기술투자"),("336370","솔루스첨단소재"),
+]
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_market_tickers(market: str) -> list:
-    """KRX 직접 접근 없이 FDR로 종목 리스트 수집 (Cloud 호환)"""
-    import FinanceDataReader as fdr
-    rows = []
+    """
+    종목 리스트 수집 — 4단계 폴백:
+    1) FDR StockListing
+    2) Yahoo Finance .KS/.KQ 우회
+    3) pykrx
+    4) 내장 하드코딩 리스트
+    """
+    suffix = ".KS" if market == "KOSPI" else ".KQ"
+    errors = []
+
+    # ── 1단계: FDR StockListing ──────────────────────────────
     try:
+        import FinanceDataReader as fdr
         lst = fdr.StockListing(market)
-        lst.columns = [c.strip() for c in lst.columns]
-        code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
-        name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
-        amt_col  = next((c for c in lst.columns if c in
-                         ["Amount","Tvalue","Marcap","시가총액"]), None)
-        if not code_col: return []
-        lst[code_col] = lst[code_col].astype(str).str.zfill(6)
-        sample = lst.nlargest(120, amt_col) if amt_col else lst.head(120)
-        for _, row in sample.iterrows():
-            code = str(row[code_col]).zfill(6)
-            name = str(row.get(name_col, code))
-            if code.isdigit() and name:
-                rows.append({"ticker": code, "name": name, "market": market})
-    except Exception:
-        pass
-    return rows
+        if lst is not None and len(lst) > 0:
+            lst.columns = [c.strip() for c in lst.columns]
+            code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
+            name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
+            amt_col  = next((c for c in lst.columns if c in ["Amount","Tvalue","Marcap"]), None)
+            if code_col:
+                lst[code_col] = lst[code_col].astype(str).str.zfill(6)
+                sample = lst.nlargest(120, amt_col) if amt_col else lst.head(120)
+                rows = [{"ticker": str(r[code_col]).zfill(6),
+                         "name":   str(r.get(name_col, r[code_col])),
+                         "market": market,
+                         "yf_ticker": str(r[code_col]).zfill(6) + suffix}
+                        for _, r in sample.iterrows()
+                        if str(r[code_col]).isdigit()]
+                if rows:
+                    print(f"[티커] FDR 성공: {market} {len(rows)}개")
+                    return rows
+    except Exception as e:
+        errors.append(f"FDR: {type(e).__name__}: {str(e)[:80]}")
+        print(f"[티커오류] {errors[-1]}")
+
+    # ── 2단계: Yahoo Finance .KS/.KQ 우회 ────────────────────
+    try:
+        import yfinance as yf
+        # Yahoo Finance에서 KOSPI/KOSDAQ 지수 구성종목 스크리닝
+        # ^KS11 = KOSPI 지수, ^KQ11 = KOSDAQ 지수
+        base = _KOSPI_TICKERS if market == "KOSPI" else _KOSDAQ_TICKERS
+        rows = []
+        for code, name in base:
+            yf_ticker = f"{code}{suffix}"
+            rows.append({"ticker": code, "name": name,
+                         "market": market, "yf_ticker": yf_ticker})
+        if rows:
+            print(f"[티커] Yahoo Finance 우회 성공: {market} {len(rows)}개")
+            return rows
+    except Exception as e:
+        errors.append(f"Yahoo: {type(e).__name__}: {str(e)[:80]}")
+        print(f"[티커오류] {errors[-1]}")
+
+    # ── 3단계: pykrx ─────────────────────────────────────────
+    try:
+        from pykrx import stock as krx_stock
+        today = datetime.now().strftime("%Y%m%d")
+        codes = krx_stock.get_market_ticker_list(today, market=market)
+        rows = []
+        for code in list(codes)[:120]:
+            try:    name = krx_stock.get_market_ticker_name(code)
+            except: name = code
+            rows.append({"ticker": str(code).zfill(6), "name": name,
+                         "market": market,
+                         "yf_ticker": str(code).zfill(6) + suffix})
+        if rows:
+            print(f"[티커] pykrx 성공: {market} {len(rows)}개")
+            return rows
+    except Exception as e:
+        errors.append(f"pykrx: {type(e).__name__}: {str(e)[:80]}")
+        print(f"[티커오류] {errors[-1]}")
+
+    # ── 4단계: 내장 하드코딩 리스트 ──────────────────────────
+    print(f"[티커] 내장 리스트 사용: {market} (오류: {'; '.join(errors)})")
+    base = _KOSPI_TICKERS if market == "KOSPI" else _KOSDAQ_TICKERS
+    return [{"ticker": c, "name": n, "market": market,
+             "yf_ticker": c + suffix} for c, n in base]
 
 
 def get_stock_list() -> pd.DataFrame:
@@ -858,8 +961,10 @@ def page_quant(username: str):
             t = get_market_tickers(mkt)
             tickers.extend(t)
         if not tickers:
-            st.warning("⚠️ 종목 목록을 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.")
+            st.error("❌ 종목 목록을 가져올 수 없습니다.")
+            st.info("💡 캐시 초기화 후 재시도: 브라우저 새로고침 → 다시 스캔")
             return
+        st.caption(f"📋 {len(tickers)}개 종목 로드 완료 (FDR/pykrx/내장 리스트 중 하나)")
 
         total = len(tickers)
         prog_bar.progress(5, text=f"{total}개 종목 분석 시작...")
@@ -869,7 +974,24 @@ def page_quant(username: str):
             try:
                 end   = datetime.now().strftime("%Y%m%d")
                 start = (datetime.now()-timedelta(days=400)).strftime("%Y%m%d")
-                df = fdr.DataReader(t["ticker"], start, end)
+
+                # Yahoo Finance(.KS/.KQ) 우선, 실패 시 FDR 폴백
+                df = None
+                yf_ticker = t.get("yf_ticker", t["ticker"])
+                try:
+                    import yfinance as yf
+                    yf_df = yf.download(yf_ticker, start=start[:4]+"-"+start[4:6]+"-"+start[6:],
+                                        end=end[:4]+"-"+end[4:6]+"-"+end[6:],
+                                        progress=False, auto_adjust=True)
+                    if yf_df is not None and len(yf_df) >= 65:
+                        yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
+                                         for c in yf_df.columns]
+                        df = yf_df
+                except Exception:
+                    pass
+
+                if df is None or len(df) < 65:
+                    df = fdr.DataReader(t["ticker"], start, end)
                 if df is None or len(df) < 65: return None
                 for c in df.columns:
                     cl = c.strip().lower()
@@ -1016,8 +1138,10 @@ def page_swing(username: str):
                 t_list = get_market_tickers(mkt)
                 tickers_all.extend(t_list)
             if not tickers_all:
-                st.warning("⚠️ 종목 목록을 가져올 수 없습니다. 잠시 후 다시 시도해 주세요.")
+                st.error("❌ 종목 목록을 가져올 수 없습니다.")
+                st.info("💡 캐시 초기화 후 재시도: 브라우저 새로고침 → 다시 스캔")
                 return
+            st.caption(f"📋 {len(tickers_all)}개 종목 로드 (FDR/pykrx/내장 리스트 중 하나)")
             progress.progress(10, text=f"사전 필터: {len(tickers_all)}개")
             results = []
             end   = datetime.now().strftime("%Y%m%d")
@@ -1027,7 +1151,23 @@ def page_swing(username: str):
                     pct = int(10+(i/max(len(tickers_all),1))*85)
                     progress.progress(pct, text=f"스캔 {i+1}/{len(tickers_all)} | 발굴: {len(results)}개")
                 try:
-                    df = fdr.DataReader(t["ticker"], start, end)
+                    # Yahoo Finance 우선, 실패 시 FDR 폴백
+                    df = None
+                    yf_t = t.get("yf_ticker", t["ticker"])
+                    try:
+                        import yfinance as yf
+                        yf_df = yf.download(yf_t,
+                            start=start[:4]+"-"+start[4:6]+"-"+start[6:],
+                            end=end[:4]+"-"+end[4:6]+"-"+end[6:],
+                            progress=False, auto_adjust=True)
+                        if yf_df is not None and len(yf_df) >= 120:
+                            yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
+                                             for c in yf_df.columns]
+                            df = yf_df
+                    except Exception:
+                        pass
+                    if df is None:
+                        df = fdr.DataReader(t["ticker"], start, end)
                     if df is None or len(df)<120: continue
                     col_map={}
                     for c in df.columns:
