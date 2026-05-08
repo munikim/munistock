@@ -139,16 +139,23 @@ html { scroll-behavior: smooth; }
 
 /* ── 모바일 반응형 ── */
 @media (max-width: 768px) {
-    .big-num { font-size: 1.25rem; }
-    .main .block-container { padding: 0.4rem 0.4rem 2rem; }
-    .card { padding: 0.65rem 0.8rem; border-radius: 10px; }
-    .stDataFrame, [data-testid="stDataEditor"] { overflow-x: auto; font-size: 0.78rem; }
-    .stButton > button { min-height: 44px; font-size: 0.88rem; }
+    .big-num { font-size: 1.15rem; }
+    .main .block-container { padding: 0.3rem 0.3rem 2rem; max-width: 100vw; overflow-x: hidden; }
+    .card { padding: 0.6rem 0.7rem; border-radius: 10px; }
+    .stDataFrame, [data-testid="stDataEditor"] { overflow-x: auto; font-size: 0.76rem; }
+    .stButton > button { min-height: 44px; font-size: 0.85rem; }
+    /* 카드 내부 grid 모바일 overflow 방지 */
+    div[style*="grid-template-columns"] { min-width: 0; word-break: break-all; }
+    /* 전체 너비 초과 방지 */
+    * { max-width: 100%; box-sizing: border-box; }
+    /* JetBrains Mono 숫자 축소 */
+    .mono, [style*="JetBrains Mono"] { font-size: 0.82rem !important; }
 }
 @media (max-width: 480px) {
-    .big-num { font-size: 1.05rem; }
-    .label { font-size: 0.68rem; }
-    .card { padding: 0.5rem 0.65rem; }
+    .big-num { font-size: 0.95rem; }
+    .label { font-size: 0.65rem; }
+    .card { padding: 0.45rem 0.55rem; }
+    .mono, [style*="JetBrains Mono"] { font-size: 0.75rem !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1535,7 +1542,7 @@ def page_vault(username: str):
                 f'<div style="color:{ret_col};font-size:0.68rem;">'
                 f'{base:,.0f}→{cur:,.0f}원</div>'
                 f'</div></div>'
-                f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;'
                 f'gap:0.2rem;margin-top:0.35rem;font-size:0.72rem;">'
                 f'<div><div class="label">타점</div>'
                 f'<b class="mono gold-color">{int(w.get("entry",0)):,}원</b></div>'
@@ -1620,19 +1627,22 @@ def _morning_realtime(watchlist: list, username: str):
     # 상태 요약 배지
     cnt = {0:0, 1:0, 2:0, 3:0}
     for r in rows: cnt[r["pri"]] += 1
-    b1, b2, b3, b4 = st.columns(4)
-    for col, label, n, color in [
-        (b1, "✅ 타점도달", cnt[0], "#00d4aa"),
-        (b2, "🔔 근접",    cnt[1], "#ffd766"),
-        (b3, "⏳ 대기",    cnt[2], "#8892a4"),
-        (b4, "⚠️ 갭상승",  cnt[3], "#ff4b6e"),
-    ]:
+    # 모바일: 2열 2행 배치
+    badge_data = [
+        ("✅ 타점도달", cnt[0], "#00d4aa"),
+        ("🔔 근접",    cnt[1], "#fbbf24"),
+        ("⏳ 대기",    cnt[2], "#94a3b8"),
+        ("⚠️ 갭상승",  cnt[3], "#f87171"),
+    ]
+    r1c1, r1c2 = st.columns(2)
+    r2c1, r2c2 = st.columns(2)
+    for col, (label, n, color) in zip([r1c1, r1c2, r2c1, r2c2], badge_data):
         col.markdown(
             f'<div style="background:{color}18;border:1px solid {color};'
-            f'border-radius:10px;padding:0.5rem;text-align:center;">'
-            f'<div style="color:{color};font-size:0.78rem;">{label}</div>'
+            f'border-radius:12px;padding:0.8rem 0.5rem;text-align:center;margin:0.15rem 0;">'
+            f'<div style="color:{color};font-size:0.8rem;font-weight:600;">{label}</div>'
             f'<div style="color:{color};font-family:JetBrains Mono,monospace;'
-            f'font-size:1.5rem;font-weight:900;">{n}</div>'
+            f'font-size:2rem;font-weight:900;line-height:1.2;">{n}</div>'
             f'</div>', unsafe_allow_html=True)
 
     st.markdown("<div style='margin:0.8rem 0'></div>", unsafe_allow_html=True)
@@ -1678,33 +1688,33 @@ def _morning_realtime(watchlist: list, username: str):
             f'<span style="background:{bc}22;color:{bc};border-radius:8px;'
             f'padding:4px 14px;font-size:0.95rem;font-weight:700;">{r["status"]}</span>'
             f'</div>'
-            f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:0.5rem;">'
-            f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
-            f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">💰 매수타점</div>'
-            f'<div style="color:#ffd766;font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["entry"]:,.0f}</div>'
+            f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.4rem;margin-top:0.1rem;">'
+            f'<div style="background:#12172a;border-radius:10px;padding:0.6rem 0.4rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.67rem;margin-bottom:0.1rem;">💰 매수타점</div>'
+            f'<div style="color:#fbbf24;font-family:JetBrains Mono,monospace;font-size:0.88rem;font-weight:700;">{r["entry"]:,.0f}</div>'
             f'</div>'
-            f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
-            f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">📊 현재가</div>'
-            f'<div style="color:{cc};font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["cur"]:,.0f}</div>'
-            f'<div style="color:{cc};font-size:0.65rem;">{sgn}{r["chg_pct"]:.2f}%</div>'
+            f'<div style="background:#12172a;border-radius:10px;padding:0.6rem 0.4rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.67rem;margin-bottom:0.1rem;">📊 현재가</div>'
+            f'<div style="color:{cc};font-family:JetBrains Mono,monospace;font-size:0.88rem;font-weight:700;">{r["cur"]:,.0f}</div>'
+            f'<div style="color:{cc};font-size:0.62rem;">{sgn}{r["chg_pct"]:.2f}%</div>'
             f'</div>'
-            f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
-            f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">🎯 목표가</div>'
-            f'<div style="color:#00d4aa;font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["target"]:,.0f}</div>'
-            f'<div style="color:#00d4aa;font-size:0.65rem;">+{tgt_pct:.1f}%</div>'
+            f'<div style="background:{bc}18;border-radius:10px;padding:0.6rem 0.4rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.67rem;margin-bottom:0.1rem;">🚦 상태</div>'
+            f'<div style="color:{bc};font-size:0.85rem;font-weight:700;">{r["status"]}</div>'
             f'</div>'
-            f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
-            f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">🛑 손절가</div>'
-            f'<div style="color:#ff4b6e;font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["stoploss"]:,.0f}</div>'
-            f'<div style="color:#ff4b6e;font-size:0.65rem;">{stp_pct:.1f}%</div>'
+            f'<div style="background:#12172a;border-radius:10px;padding:0.6rem 0.4rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.67rem;margin-bottom:0.1rem;">🎯 목표가</div>'
+            f'<div style="color:#34d399;font-family:JetBrains Mono,monospace;font-size:0.88rem;font-weight:700;">{r["target"]:,.0f}</div>'
+            f'<div style="color:#34d399;font-size:0.62rem;">+{tgt_pct:.1f}%</div>'
             f'</div>'
-            f'<div style="background:#12172a;border-radius:10px;padding:0.55rem;text-align:center;">'
-            f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">📍 타점까지</div>'
-            f'<div style="color:{dc};font-family:JetBrains Mono,monospace;font-size:0.9rem;font-weight:700;">{r["diff_pct"]:+.2f}%</div>'
+            f'<div style="background:#12172a;border-radius:10px;padding:0.6rem 0.4rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.67rem;margin-bottom:0.1rem;">🛑 손절가</div>'
+            f'<div style="color:#f87171;font-family:JetBrains Mono,monospace;font-size:0.88rem;font-weight:700;">{r["stoploss"]:,.0f}</div>'
+            f'<div style="color:#f87171;font-size:0.62rem;">{stp_pct:.1f}%</div>'
             f'</div>'
-            f'<div style="background:{bc}18;border-radius:10px;padding:0.55rem;text-align:center;">'
-            f'<div style="color:#8892a4;font-size:0.68rem;margin-bottom:0.15rem;">🚦 상태</div>'
-            f'<div style="color:{bc};font-size:1rem;font-weight:700;">{r["status"]}</div>'
+            f'<div style="background:#12172a;border-radius:10px;padding:0.6rem 0.4rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:0.67rem;margin-bottom:0.1rem;">📍 타점까지</div>'
+            f'<div style="color:{dc};font-family:JetBrains Mono,monospace;font-size:0.88rem;font-weight:700;">{r["diff_pct"]:+.2f}%</div>'
             f'</div>'
             f'</div></div>',
             unsafe_allow_html=True)
