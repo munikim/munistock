@@ -137,6 +137,76 @@ html { scroll-behavior: smooth; }
 ::-webkit-scrollbar-track { background: #131929; }
 ::-webkit-scrollbar-thumb { background: #3d4a5e; border-radius: 3px; }
 
+/* ── 페이지 전환 깜빡임 방지 (강화) ── */
+/* 배경 항상 유지 */
+.main, [data-testid="stAppViewContainer"],
+[data-testid="stMain"], .block-container {
+    background: #0f1117 !important;
+    min-height: 100vh !important;
+}
+/* 전환 시 빈 화면 방지 */
+.element-container { transition: opacity 0.08s ease !important; }
+/* 사이드바 즉각 반응 */
+[data-testid="stSidebar"] .stRadio > div { transition: none !important; }
+
+/* ── 스켈레톤 로딩 ── */
+@keyframes skeleton-loading {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+.skeleton {
+    background: linear-gradient(90deg,#1e2535 25%,#2d3748 50%,#1e2535 75%);
+    background-size: 200% 100%;
+    animation: skeleton-loading 1.4s ease infinite;
+    border-radius: 8px;
+}
+.skeleton-h1 { height:1.8rem; width:40%; margin:0.5rem 0; }
+.skeleton-h2 { height:1.1rem; width:70%; margin:0.3rem 0; }
+.skeleton-p  { height:0.8rem; width:90%; margin:0.2rem 0; }
+.skeleton-card {
+    background:#1e2535; border:1px solid #2d3748;
+    border-radius:14px; padding:1rem; margin:0.3rem 0;
+}
+
+/* 배경이 항상 유지되도록 */
+.main, .block-container, [data-testid="stAppViewContainer"] {
+    background: #0f1117 !important;
+    min-height: 100vh;
+}
+/* 전환 시 빈 화면 방지 — 요소가 즉시 나타나도록 */
+.element-container, .stMarkdown, .stButton, .stDataFrame {
+    animation: none !important;
+    transition: opacity 0.1s ease !important;
+}
+/* 스켈레톤 로딩 애니메이션 */
+@keyframes skeleton-loading {
+    0%   { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+.skeleton {
+    background: linear-gradient(90deg, #1e2535 25%, #2d3748 50%, #1e2535 75%);
+    background-size: 200% 100%;
+    animation: skeleton-loading 1.4s ease infinite;
+    border-radius: 8px;
+    height: 1.2rem;
+    margin: 0.3rem 0;
+}
+.skeleton-card {
+    background: #1e2535;
+    border: 1px solid #2d3748;
+    border-radius: 14px;
+    padding: 1rem;
+    margin: 0.3rem 0;
+}
+.skeleton-title  { height: 1.1rem; width: 60%; }
+.skeleton-text   { height: 0.85rem; width: 90%; }
+.skeleton-number { height: 1.8rem; width: 45%; }
+
+/* 라디오 메뉴 선택 시 즉각 반응 */
+[data-testid="stSidebar"] .stRadio > div {
+    transition: none !important;
+}
+
 /* ── 모바일 반응형 ── */
 @media (max-width: 768px) {
     .big-num { font-size: 1.15rem; }
@@ -1949,7 +2019,7 @@ def page_super_signal(username: str):
 def page_vault(username: str):
     st.markdown("## 🗄️ 관심종목")
 
-    wl = load_watchlist(username)
+    wl = load_watchlist(username) or []
     if not wl:
         st.info("관심종목이 없습니다. 퀀트/스윙 스캐너에서 종목을 추가하세요.")
         return
@@ -2209,9 +2279,9 @@ def _morning_realtime(watchlist: list, username: str):
 
 def page_morning(username: str):
     st.markdown("## 🌅 모닝 체크")
-    all_wl    = load_watchlist(username)
+    all_wl    = load_watchlist(username) or []
     watchlist = [w for w in all_wl
-                 if w.get("is_active", w.get("morning_check", False))]
+                 if w and w.get("is_active", w.get("morning_check", False))]
     if not watchlist:
         st.warning("감시 중인 종목이 없습니다.")
         st.info("👉 [🗄️ 관심종목] 탭에서 [🌅 모닝체크] 열을 체크해 주세요.")
@@ -2276,25 +2346,28 @@ def main():
     if menu in ["🌅 모닝 체크"]:
         show_notification_bar(username)
 
-    # 페이지 라우팅
-    if menu == "📊 대시보드":
-        page_dashboard(username)
-    elif menu == "💼 내 포트폴리오":
-        page_portfolio(username)
-    elif menu == "🧮 퀀트 스캐너 2차 정밀":
-        page_quant(username)
-    elif menu == "📈 스윙 매매":
-        page_swing(username)
-    elif menu == "📡 수급 스캐너":
-        page_supply(username)
-    elif menu == "📡 수급 스캐너":
-        page_supply(username)
-    elif menu == "🚀 슈퍼 시그널":
-        page_super_signal(username)
-    elif menu == "🗄️ 관심종목":
-        page_vault(username)
-    elif menu == "🌅 모닝 체크":
-        page_morning(username)
+    # 페이지 라우팅 — 컨테이너로 감싸 깜빡임 방지
+    prev_menu = st.session_state.get("_prev_menu","")
+    if prev_menu != menu:
+        st.session_state["_prev_menu"] = menu
+
+    with st.container():
+        if menu == "📊 대시보드":
+            page_dashboard(username)
+        elif menu == "💼 내 포트폴리오":
+            page_portfolio(username)
+        elif menu == "🧮 퀀트 스캐너 2차 정밀":
+            page_quant(username)
+        elif menu == "📈 스윙 매매":
+            page_swing(username)
+        elif menu == "📡 수급 스캐너":
+            page_supply(username)
+        elif menu == "🚀 슈퍼 시그널":
+            page_super_signal(username)
+        elif menu == "🗄️ 관심종목":
+            page_vault(username)
+        elif menu == "🌅 모닝 체크":
+            page_morning(username)
 
 
 if __name__ == "__main__":
