@@ -679,6 +679,71 @@ def calc_atr_targets(ticker: str, atr_mult_stop: float = 2.0,
     except Exception:
         return {}
 
+def calc_trailing_stop(ticker: str, buy_price: float,
+                        buy_date: str, atr_mult: float = 2.0,
+                        saved_high: float = 0.0) -> dict:
+    """
+    트레일링 스탑 계산
+    - 매수 이후 최고가 추적
+    - 손절가 = max(초기ATR손절, 최고가 - ATR*배수)
+    - 주가 상승 시 손절가 상향, 하락 시 고정
+    """
+    try:
+        df = get_ohlcv_cached(ticker, days=120)
+        if df is None or len(df) < 15:
+            return {}
+
+        import ta
+        atr_ind  = ta.volatility.AverageTrueRange(
+            df["high"], df["low"], df["close"], window=14)
+        df["atr"] = atr_ind.average_true_range()
+        df = df.ffill().fillna(0)
+
+        cur_price = float(df["close"].iloc[-1])
+        atr_val   = float(df["atr"].iloc[-1])
+
+        # 매수일 이후 데이터 필터링
+        try:
+            buy_dt = pd.to_datetime(buy_date)
+            df_after = df[df.index >= buy_dt]
+        except Exception:
+            df_after = df
+
+        # 매수 이후 최고가
+        if len(df_after) > 0 and "high" in df_after.columns:
+            peak_high = float(df_after["high"].max())
+        else:
+            peak_high = buy_price
+
+        # saved_high와 비교해 더 높은 값 사용 (이전 세션 최고가 유지)
+        peak_high = max(peak_high, saved_high, buy_price)
+
+        # 초기 ATR 손절가 (매수가 기준)
+        initial_sl = buy_price - atr_val * atr_mult
+
+        # 트레일링 손절가 (최고가 기준) — 초기 손절가보다 낮으면 초기값 유지
+        trailing_sl = max(initial_sl, peak_high - atr_val * atr_mult)
+
+        # 수익률
+        pnl_pct = (cur_price - buy_price) / buy_price * 100 if buy_price else 0
+
+        # 트레일링 진행률 (얼마나 올라갔는지)
+        trail_progress = (peak_high - buy_price) / (atr_val * atr_mult) * 100 if atr_val else 0
+
+        return {
+            "cur":          cur_price,
+            "atr":          round(atr_val, 2),
+            "peak_high":    round(peak_high, 0),
+            "initial_sl":   round(initial_sl, 0),
+            "trailing_sl":  round(trailing_sl, 0),
+            "trail_raised": trailing_sl > initial_sl,  # 손절가가 올라갔는지
+            "sl_triggered": cur_price <= trailing_sl,  # 손절 발동 여부
+            "pnl_pct":      round(pnl_pct, 2),
+            "trail_pct":    round(trail_progress, 1),
+        }
+    except Exception as e:
+        return {}
+
 def load_notifications(username: str) -> list:
     f = user_file(username, "notifications.json")
     try:
@@ -933,77 +998,136 @@ def page_portfolio(username: str):
         return
 
     st.markdown("### 📋 보유 종목 현황")
+    st.caption("🔺 트레일링 스탑: 최고가 기준으로 손절선이 자동 상향, 하락 시 고정")
 
     total_cost, total_cur = 0.0, 0.0
     for p in holding:
         qty_n     = int(p.get("qty",1))
         buy_price = float(p.get("buy_price",0))
         cost      = float(p.get("total_amount", buy_price*qty_n))
-        cur       = float(get_price(p["ticker"]) or buy_price)
-        val       = cur * qty_n
-        pnl       = val - cost
-        pnl_pct   = pnl/cost*100 if cost else 0
         total_cost += cost
-        total_cur  += val
 
-        # ATR 기반 손절/익절 (저장된 값 or 실시간 재계산)
-        sl   = p.get("stoploss_atr", int(buy_price*0.93))
-        tg   = p.get("target_atr",   int(buy_price*1.20))
-        atr  = p.get("atr_val", 0)
+        # ── 트레일링 스탑 실시간 계산 ─────────────────────────
+        saved_high = float(p.get("peak_high", buy_price))
+        trail = calc_trailing_stop(
+            p["ticker"], buy_price,
+            p.get("date",""), atr_stop, saved_high)
+
+        if trail:
+            cur          = trail["cur"]
+            atr_val      = trail["atr"]
+            peak_high    = trail["peak_high"]
+            initial_sl   = trail["initial_sl"]
+            trailing_sl  = trail["trailing_sl"]
+            trail_raised = trail["trail_raised"]
+            sl_triggered = trail["sl_triggered"]
+            trail_pct    = trail["trail_pct"]
+            # 최고가 저장 (세션 간 유지)
+            for item in portfolio:
+                if item["id"]==p["id"] and peak_high > item.get("peak_high",0):
+                    item["peak_high"] = peak_high
+            save_portfolio(username, portfolio)
+        else:
+            cur          = float(get_price(p["ticker"]) or buy_price)
+            atr_val      = p.get("atr_val",0)
+            peak_high    = buy_price
+            initial_sl   = p.get("stoploss_atr", int(buy_price*0.93))
+            trailing_sl  = initial_sl
+            trail_raised = False
+            sl_triggered = cur <= trailing_sl
+            trail_pct    = 0
+
+        val     = cur * qty_n
+        pnl     = val - cost
+        pnl_pct = pnl/cost*100 if cost else 0
+        total_cur += val
+
+        tg   = p.get("target_atr", int(buy_price*1.20))
         smul = p.get("atr_stop_mult", atr_stop)
         tmul = p.get("atr_tgt_mult",  atr_tgt)
-
         cc_  = "#38bdf8" if pnl>=0 else "#f87171"
         sg_  = "+" if pnl>=0 else ""
 
-        # 상태 판정
-        if cur <= sl:   badge, bc = "🚨 손절선 이탈!", "#f87171"
-        elif cur >= tg: badge, bc = "🎯 익절 도달!", "#34d399"
-        elif (cur-sl)/(tg-sl) > 0.7 if tg>sl else False:
+        # ── 상태 판정 ─────────────────────────────────────────
+        if sl_triggered:
+            badge, bc = "🚨 트레일링 손절 발동!", "#f87171"
+        elif cur >= tg:
+            badge, bc = "🎯 익절 도달!", "#34d399"
+        elif trail_raised:
+            badge, bc = "🔺 손절선 상향중", "#38bdf8"
+        elif (cur-trailing_sl)/(tg-trailing_sl)>0.7 if tg>trailing_sl else False:
             badge, bc = "📈 목표 근접", "#fbbf24"
-        else:           badge, bc = "⏳ 보유중", "#94a3b8"
+        else:
+            badge, bc = "⏳ 보유중", "#94a3b8"
 
+        # ── 카드 ──────────────────────────────────────────────
         st.markdown(
-            f'<div class="card" style="border-left:4px solid {cc_};">'
+            f'<div class="card" style="border-left:4px solid {bc};">'
             f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
             f'<div>'
             f'<b style="font-size:1rem;">{p["name"]}</b>'
             f'<span style="color:#94a3b8;font-size:0.75rem;margin-left:0.4rem;">{p["ticker"]}</span>'
             f'<span style="background:{bc}22;color:{bc};border-radius:5px;'
             f'padding:2px 8px;font-size:0.72rem;margin-left:0.4rem;">{badge}</span>'
+            f'{"<span style=\'background:#38bdf822;color:#38bdf8;border-radius:5px;padding:2px 7px;font-size:0.68rem\'> 🔺올라감</span>" if trail_raised else ""}'
             f'</div>'
             f'<div style="text-align:right;">'
             f'<div style="color:{cc_};font-family:JetBrains Mono,monospace;'
             f'font-weight:900;font-size:1.2rem;">{sg_}{pnl_pct:.2f}%</div>'
-            f'<div style="color:{cc_};font-size:0.8rem;">{sg_}{pnl:,.0f}원</div>'
+            f'<div style="color:{cc_};font-size:0.78rem;">{sg_}{pnl:,.0f}원</div>'
             f'</div></div>'
-            f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
-            f'gap:0.4rem;margin-top:0.6rem;font-size:0.8rem;">'
+
+            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);'
+            f'gap:0.4rem;margin-top:0.6rem;font-size:0.78rem;">'
             f'<div><div class="label">평단가</div>'
             f'<b class="mono">{buy_price:,.0f}원</b></div>'
             f'<div><div class="label">현재가</div>'
             f'<b class="mono" style="color:{cc_}">{cur:,.0f}원</b></div>'
-            f'<div><div class="label">수량</div>'
-            f'<b>{qty_n}주</b></div>'
-            f'<div><div class="label">ATR({atr:,.0f}원)</div>'
-            f'<b style="color:#94a3b8">{atr/cur*100:.1f}%</b></div>'
+            f'<div><div class="label">🏔 매수후 최고가</div>'
+            f'<b class="mono" style="color:#fbbf24">{peak_high:,.0f}원</b></div>'
+            f'</div>'
+
+            f'<div style="border-top:1px solid #2d3748;margin:0.4rem 0;"></div>'
+
+            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);'
+            f'gap:0.4rem;font-size:0.78rem;">'
+            f'<div><div class="label">🛑 초기 손절가</div>'
+            f'<b class="mono" style="color:#94a3b8">{initial_sl:,.0f}원</b></div>'
+            f'<div><div class="label" style="color:#38bdf8">🔺 트레일링 손절가</div>'
+            f'<b class="mono" style="color:{"#f87171" if sl_triggered else "#38bdf8" if trail_raised else "#e2e8f0"}">'
+            f'{trailing_sl:,.0f}원</b></div>'
+            f'<div><div class="label">🎯 익절가</div>'
+            f'<b class="mono" style="color:#34d399">{tg:,.0f}원</b></div>'
             f'</div>'
             f'</div>', unsafe_allow_html=True)
 
+        # 트레일링 진행 바
+        if trail_pct > 0:
+            bar_pct = min(trail_pct, 100)
+            bar_col = "#34d399" if bar_pct>=70 else ("#fbbf24" if bar_pct>=30 else "#38bdf8")
+            st.markdown(
+                f'<div style="margin:-0.1rem 0 0.3rem;padding:0 0.2rem;">'
+                f'<div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.15rem;">'
+                f'트레일링 진행률 {trail_pct:.0f}% (손절선 {trail_raised and "상향됨" or "초기값"})</div>'
+                f'<div style="background:#2d3748;border-radius:4px;height:5px;">'
+                f'<div style="background:{bar_col};width:{bar_pct}%;height:5px;'
+                f'border-radius:4px;transition:width 0.3s;"></div>'
+                f'</div></div>', unsafe_allow_html=True)
+
         # 매매 가이드 접기
-        with st.expander(f"📋 {p['name']} 매매 가이드 (ATR 기반)", expanded=False):
+        with st.expander(f"📋 {p['name']} 상세 / 조작", expanded=False):
             g1,g2,g3,g4 = st.columns(4)
-            g1.metric(f"🛑 손절({smul}ATR)", f"{sl:,}원",
-                      delta=f"{(sl-cur)/cur*100:.1f}%", delta_color="inverse")
+            g1.metric("🛑 트레일링 손절", f"{trailing_sl:,}원",
+                      delta=f"{(trailing_sl-cur)/cur*100:.1f}%", delta_color="inverse")
             g2.metric(f"🎯 익절({tmul}ATR)", f"{tg:,}원",
                       delta=f"+{(tg-cur)/cur*100:.1f}%")
             g3.metric("현재 손익비",
-                      f"{(tg-cur)/(cur-sl):.1f}배" if cur>sl else "—")
-            g4.metric("ATR값", f"{atr:,.0f}원")
+                      f"{(tg-cur)/(cur-trailing_sl):.1f}배" if cur>trailing_sl else "—")
+            g4.metric("ATR값", f"{atr_val:,.0f}원 ({atr_val/cur*100:.1f}%)" if cur else "—")
 
             rc1, rc2, rc3 = st.columns(3)
             with rc1:
-                if st.button("🔄 ATR 재계산", key=f"recalc_{p['id']}"):
+                if st.button("🔄 재계산", key=f"recalc_{p['id']}"):
                     new_atr = calc_atr_targets(p["ticker"], atr_stop, atr_tgt)
                     if new_atr:
                         for item in portfolio:
@@ -1014,21 +1138,20 @@ def page_portfolio(username: str):
                                 item["atr_stop_mult"] = atr_stop
                                 item["atr_tgt_mult"]  = atr_tgt
                         save_portfolio(username, portfolio)
-                        st.success(f"재계산 완료: 손절 {new_atr['stoploss']:,.0f} / 익절 {new_atr['target']:,.0f}")
+                        st.success(f"재계산 완료!")
                         st.rerun()
             with rc2:
-                if st.button("✅ 청산 처리", key=f"sell_{p['id']}"):
+                if st.button("✅ 청산", key=f"sell_{p['id']}"):
                     realized = (cur - buy_price) * qty_n
                     for item in portfolio:
                         if item["id"]==p["id"]:
-                            item["status"]="청산"
-                            item["realized_pnl"]=realized
+                            item["status"]="청산"; item["realized_pnl"]=realized
                     save_portfolio(username, portfolio)
-                    st.success(f"청산 완료 (실현손익: {realized:+,.0f}원)")
+                    st.success(f"청산 완료 ({realized:+,.0f}원)")
                     st.rerun()
             with rc3:
                 if st.button("🗑️ 삭제", key=f"del_{p['id']}"):
-                    save_portfolio(username, [x for x in portfolio if x["id"]!=p["id"]])
+                    save_portfolio(username,[x for x in portfolio if x["id"]!=p["id"]])
                     st.rerun()
 
     # ── 포트폴리오 요약 ───────────────────────────────────────
@@ -1606,79 +1729,117 @@ def page_swing(username: str):
 
 def page_supply(username: str):
     st.markdown("## 📡 수급 스캐너")
-    st.info("💡 외국인 + 기관 **쌍끌이** 종목 발굴 — Yahoo Finance 기반, KRX 차단 환경에서도 작동")
+    st.info("💡 외국인·기관 수급 점수 100점제 — Yahoo Finance 기반. 60점↑ 종목을 스윙 관심종목에 바로 등록하세요.")
 
     with st.expander("⚙️ 스캔 설정", expanded=True):
         c1, c2, c3 = st.columns(3)
-        with c1: market_s = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="sup_mkt")
-        with c2: top_n    = st.slider("Top N", 10, 50, 20, key="sup_n")
-        with c3: days_sel = st.slider("집계 기간(거래일)", 3, 20, 5, key="sup_days")
+        with c1: market_s  = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="sup_mkt")
+        with c2: top_n     = st.slider("Top N", 10, 50, 20, key="sup_n")
+        with c3:
+            min_score = st.slider("최소 수급 점수", 0, 100, 40, key="sup_score",
+                                   help="0=전체, 60↑=쌍끌이 강세")
+            days_sel  = st.slider("집계 기간(거래일)", 3, 20, 5, key="sup_days")
 
     if st.button("🔍 수급 스캔 시작", type="primary", key="sup_scan"):
         prog = st.progress(0, text="종목 수집 중...")
         results = []
-        today = datetime.now()
 
         try:
             import yfinance as yf
-            markets = ["KOSPI","KOSDAQ"] if market_s=="전체" else [market_s]
             suffix_map = {"KOSPI":".KS","KOSDAQ":".KQ"}
-
-            # 내장 종목 리스트 활용
+            markets = ["KOSPI","KOSDAQ"] if market_s=="전체" else [market_s]
             tickers_pool = []
             for mkt in markets:
-                base = get_market_tickers(mkt)
-                tickers_pool.extend(base)
+                tickers_pool.extend(get_market_tickers(mkt))
 
             total = len(tickers_pool)
             prog.progress(5, text=f"{total}개 종목 수급 분석 시작...")
 
-            end_dt   = today
-            start_dt = today - timedelta(days=days_sel*2 + 10)
+            end_dt   = datetime.now()
+            start_dt = end_dt - timedelta(days=days_sel*2+10)
             s_str = start_dt.strftime("%Y-%m-%d")
             e_str = end_dt.strftime("%Y-%m-%d")
 
             for i, t in enumerate(tickers_pool):
                 if i % 10 == 0:
                     pct = int(5 + i/total*90)
-                    prog.progress(pct, text=f"분석 중 {i+1}/{total} | 발굴: {len(results)}개")
+                    prog.progress(pct, text=f"분석 {i+1}/{total} | 발굴: {len(results)}개")
                 try:
-                    yf_t = t.get("yf_ticker", t["ticker"] + suffix_map.get(t["market"],".KS"))
+                    yf_t = t.get("yf_ticker",
+                                  t["ticker"]+suffix_map.get(t["market"],".KS"))
                     tk   = yf.Ticker(yf_t)
+                    info = tk.info or {}
 
-                    # 기관/외국인 보유 데이터
-                    inst_info = tk.institutional_holders
-                    info      = tk.info or {}
+                    # ── 기관/외국인 보유 데이터 ───────────────
+                    inst_pct    = float(info.get("heldPercentInstitutions",0) or 0)*100
+                    insider_pct = float(info.get("heldPercentInsiders",0) or 0)*100
+                    # Yahoo Finance: floatShares 대비 기관·개인 보유
+                    float_pct   = float(info.get("floatShares",0) or 0)
+                    shares_out  = float(info.get("sharesOutstanding",1) or 1)
+                    # 외국인 추정 (전체 - 기관 - 내부자, 양수인 경우)
+                    foreign_est = max(0, 100 - inst_pct - insider_pct)
 
-                    # 기관 보유 비중
-                    inst_pct  = float(info.get("heldPercentInstitutions", 0) or 0) * 100
-                    insider_pct = float(info.get("heldPercentInsiders", 0) or 0) * 100
-
-                    # 최근 거래량 변화 (수급 대리 지표)
+                    # ── 가격/거래량 데이터 ────────────────────
                     hist = tk.history(start=s_str, end=e_str)
                     if hist is None or len(hist) < 3:
                         continue
 
-                    avg_vol   = float(hist["Volume"].mean())
-                    recent_vol = float(hist["Volume"].iloc[-days_sel:].mean())
-                    vol_ratio  = recent_vol / avg_vol if avg_vol > 0 else 0
+                    avg_vol    = float(hist["Volume"].mean()) if len(hist)>0 else 0
+                    recent_vol = float(hist["Volume"].iloc[-days_sel:].mean()) if len(hist)>=days_sel else avg_vol
+                    vol_ratio  = round(recent_vol/avg_vol, 2) if avg_vol>0 else 1.0
 
-                    cur_price = float(hist["Close"].iloc[-1]) if len(hist) > 0 else 0
-                    price_chg = float((hist["Close"].iloc[-1] - hist["Close"].iloc[-days_sel]) /
-                                      hist["Close"].iloc[-days_sel] * 100) if len(hist) >= days_sel else 0
+                    cur_price = float(hist["Close"].iloc[-1]) if len(hist)>0 else 0
+                    if cur_price == 0: continue
 
-                    # 쌍끌이 판정: 기관 보유 15% 이상 + 거래량 증가
-                    if inst_pct >= 15 and vol_ratio >= 1.2:
-                        results.append({
-                            "종목코드":    t["ticker"],
-                            "종목명":      t["name"],
-                            "시장":        t["market"],
-                            "기관보유(%)": round(inst_pct, 1),
-                            "내부자보유(%)": round(insider_pct, 1),
-                            "거래량비율":  round(vol_ratio, 2),
-                            "기간수익률(%)": round(price_chg, 2),
-                            "현재가":      int(cur_price),
-                        })
+                    price_chg = float(
+                        (hist["Close"].iloc[-1]-hist["Close"].iloc[-days_sel]) /
+                        hist["Close"].iloc[-days_sel]*100
+                    ) if len(hist)>=days_sel else 0
+
+                    # ── 수급 점수 100점 산출 ──────────────────
+                    # 기관 보유 점수 (40점)
+                    inst_score = min(40, inst_pct * 2)
+                    # 외국인 추정 점수 (30점)
+                    foreign_score = min(30, foreign_est * 0.8)
+                    # 거래량 비율 점수 (20점)
+                    vol_score = min(20, (vol_ratio-1)*20) if vol_ratio>1 else 0
+                    # 수익률 점수 (10점)
+                    ret_score = min(10, max(0, price_chg*2))
+
+                    total_score = round(inst_score+foreign_score+vol_score+ret_score, 1)
+
+                    # 쌍끌이 태그
+                    if inst_pct>=15 and foreign_est>=20 and vol_ratio>=1.3:
+                        tag = "🔥쌍끌이"
+                    elif inst_pct>=10 and vol_ratio>=1.2:
+                        tag = "📈기관강세"
+                    elif foreign_est>=25 and vol_ratio>=1.2:
+                        tag = "🌍외인강세"
+                    elif vol_ratio>=1.5:
+                        tag = "💧거래급증"
+                    else:
+                        tag = ""
+
+                    if total_score < min_score:
+                        continue
+
+                    results.append({
+                        "종목코드":    t["ticker"],
+                        "종목명":      t["name"],
+                        "시장":        t["market"],
+                        "수급점수":    total_score,
+                        "수급태그":    tag,
+                        "기관보유(%)": round(inst_pct, 1),
+                        "외국인추정(%)": round(foreign_est, 1),
+                        "거래량비율":  vol_ratio,
+                        "기간수익률(%)": round(price_chg, 2),
+                        "현재가":      int(cur_price),
+                        # 점수 세부
+                        "_inst_s":    round(inst_score,1),
+                        "_for_s":     round(foreign_score,1),
+                        "_vol_s":     round(vol_score,1),
+                        "_ret_s":     round(ret_score,1),
+                    })
                 except Exception:
                     continue
 
@@ -1686,32 +1847,32 @@ def page_supply(username: str):
 
             if results:
                 df_r = (pd.DataFrame(results)
-                        .sort_values("기관보유(%)", ascending=False)
+                        .sort_values("수급점수", ascending=False)
                         .head(top_n).reset_index(drop=True))
                 st.session_state["supply_records"] = df_r.to_dict("records")
-                st.success(f"✅ 수급 강세 종목 {len(df_r)}개 발굴!")
+                st.success(f"✅ {len(df_r)}개 발굴! 🔥쌍끌이: {sum(1 for r in df_r.to_dict('records') if r['수급태그']=='🔥쌍끌이')}개")
             else:
-                st.info("📭 조건에 맞는 종목이 없습니다. 조건을 완화해 보세요.")
+                st.info("📭 조건 부합 종목 없음. 최소 점수를 낮춰보세요.")
         except Exception as e:
-            st.warning(f"⚠️ 수급 데이터 접근 실패: {e}")
-            st.info("💡 Yahoo Finance 데이터는 실시간이 아닐 수 있습니다.")
+            st.warning(f"⚠️ 오류: {e}")
 
     # ── 결과 렌더링 ──────────────────────────────────────────
     records = st.session_state.get("supply_records", [])
     if not records:
-        st.info("👆 스캔 버튼을 눌러 수급 강세 종목을 찾아보세요!")
+        st.info("👆 스캔 버튼을 눌러주세요.")
         return
 
+    df_r = pd.DataFrame(records)
     st.markdown("---")
 
     # 요약
-    df_r = pd.DataFrame(records)
     s1,s2,s3,s4 = st.columns(4)
+    tag_cnt = sum(1 for r in records if r["수급태그"]=="🔥쌍끌이")
     for col, label, val, color in [
-        (s1,"📡 발굴 종목",  f"{len(records)}개",                   "#38bdf8"),
-        (s2,"🏦 평균 기관보유", f"{df_r['기관보유(%)'].mean():.1f}%", "#a78bfa"),
-        (s3,"📈 평균 거래량비율", f"{df_r['거래량비율'].mean():.2f}배", "#34d399"),
-        (s4,"💹 평균 수익률", f"{df_r['기간수익률(%)'].mean():.1f}%","#fbbf24"),
+        (s1,"📡 발굴",     f"{len(records)}개",                        "#38bdf8"),
+        (s2,"🔥 쌍끌이",  f"{tag_cnt}개",                              "#f87171"),
+        (s3,"🏦 평균기관", f"{df_r['기관보유(%)'].mean():.1f}%",        "#a78bfa"),
+        (s4,"📊 평균점수", f"{df_r['수급점수'].mean():.0f}점",          "#fbbf24"),
     ]:
         col.markdown(
             f'<div class="card" style="text-align:center;">'
@@ -1720,56 +1881,90 @@ def page_supply(username: str):
             f'font-size:1.2rem;font-weight:900;">{val}</div>'
             f'</div>', unsafe_allow_html=True)
 
-    st.markdown(f"<div style='color:#94a3b8;font-size:0.8rem;margin:0.4rem 0;'>"
-                f"기관 보유비중 내림차순 | {datetime.now().strftime('%Y-%m-%d %H:%M')} 기준"
-                f"</div>", unsafe_allow_html=True)
+    st.caption(f"수급 점수 내림차순 | {datetime.now().strftime('%Y-%m-%d %H:%M')} 기준")
 
     # 4열 카드
+    tag_colors = {"🔥쌍끌이":"#f87171","📈기관강세":"#a78bfa",
+                  "🌍외인강세":"#34d399","💧거래급증":"#38bdf8","":"#2d3748"}
     for row_i in range(0, len(records), 4):
         row_recs = records[row_i: row_i+4]
         cols = st.columns(4)
         for col, r in zip(cols, row_recs):
             rank    = row_i + row_recs.index(r) + 1
+            score   = r["수급점수"]
+            tag     = r.get("수급태그","")
+            tc      = tag_colors.get(tag,"#2d3748")
+            sc_col  = "#34d399" if score>=70 else ("#fbbf24" if score>=50 else "#94a3b8")
             ret_col = "#38bdf8" if r["기간수익률(%)"]>=0 else "#f87171"
             ret_sgn = "+" if r["기간수익률(%)"]>=0 else ""
             vr_col  = "#34d399" if r["거래량비율"]>=1.5 else "#fbbf24"
 
-            col.markdown(
-                f'<div class="card" style="border-top:3px solid #a78bfa;">'
-                f'<div style="display:flex;justify-content:space-between;">'
-                f'<b style="font-size:0.9rem;">#{rank} {r["종목명"]}</b>'
-                f'<span style="color:#94a3b8;font-size:0.7rem;">{r["시장"]}</span>'
-                f'</div>'
-                f'<div style="color:#94a3b8;font-size:0.7rem;">{r["종목코드"]}</div>'
-                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.3rem;'
-                f'margin-top:0.5rem;font-size:0.75rem;">'
-                f'<div><div class="label">🏦 기관보유</div>'
-                f'<b style="color:#a78bfa">{r["기관보유(%)"]}%</b></div>'
-                f'<div><div class="label">📊 거래량비율</div>'
-                f'<b style="color:{vr_col}">{r["거래량비율"]}배</b></div>'
-                f'<div><div class="label">💹 기간수익률</div>'
-                f'<b style="color:{ret_col}">{ret_sgn}{r["기간수익률(%)"]}%</b></div>'
-                f'<div><div class="label">💵 현재가</div>'
-                f'<b style="font-family:JetBrains Mono,monospace;">{r["현재가"]:,}원</b></div>'
-                f'</div>'
-                f'</div>', unsafe_allow_html=True)
+            # 수급 점수 게이지 바
+            bar_w = min(score, 100)
+            bar_c = "#34d399" if bar_w>=70 else ("#fbbf24" if bar_w>=50 else "#94a3b8")
 
-            if col.button("➕", key=f"sup_add_{r['종목코드']}_{row_i}",
-                          use_container_width=True, help=f"{r['종목명']} 관심종목 추가"):
+            col.markdown(
+                f'<div class="card" style="border-top:3px solid {tc};">'
+                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+                f'<div style="flex:1;min-width:0;">'
+                f'<b style="font-size:0.85rem;white-space:nowrap;overflow:hidden;'
+                f'text-overflow:ellipsis;display:block;">#{rank} {r["종목명"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.65rem;">{r["종목코드"]} | {r["시장"]}</span>'
+                f'</div>'
+                f'{"<span style=\'font-size:0.7rem;font-weight:700;color:"+tc+"\'>"+tag+"</span>" if tag else ""}'
+                f'</div>'
+
+                # 수급 점수 게이지
+                f'<div style="margin:0.4rem 0;">'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.68rem;">'
+                f'<span style="color:#94a3b8;">수급 점수</span>'
+                f'<b style="color:{sc_col};">{score:.0f}점</b></div>'
+                f'<div style="background:#2d3748;border-radius:4px;height:6px;margin-top:2px;">'
+                f'<div style="background:{bar_c};width:{bar_w}%;height:6px;border-radius:4px;"></div>'
+                f'</div></div>'
+
+                # 세부 점수
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem;font-size:0.68rem;color:#94a3b8;">'
+                f'<span>기관 {r["_inst_s"]:.0f}pt</span>'
+                f'<span>외인 {r["_for_s"]:.0f}pt</span>'
+                f'<span>거래량 {r["_vol_s"]:.0f}pt</span>'
+                f'<span>수익률 {r["_ret_s"]:.0f}pt</span>'
+                f'</div>'
+                f'<div style="border-top:1px solid #2d3748;margin:0.3rem 0;"></div>'
+
+                # 핵심 수치
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem;font-size:0.72rem;">'
+                f'<div><div class="label">🏦 기관보유</div>'
+                f'<b style="color:#a78bfa;">{r["기관보유(%)"]}%</b></div>'
+                f'<div><div class="label">🌍 외인추정</div>'
+                f'<b style="color:#34d399;">{r["외국인추정(%)"]}%</b></div>'
+                f'<div><div class="label">📊 거래량비율</div>'
+                f'<b style="color:{vr_col};">{r["거래량비율"]}배</b></div>'
+                f'<div><div class="label">💹 수익률</div>'
+                f'<b style="color:{ret_col};">{ret_sgn}{r["기간수익률(%)"]}%</b></div>'
+                f'</div></div>',
+                unsafe_allow_html=True)
+
+            # 관심종목 등록 (60점↑ 강조)
+            btn_label = "⭐ 관심등록" if score>=60 else "➕ 등록"
+            btn_type  = "primary" if score>=60 else "secondary"
+            if col.button(btn_label, key=f"sup_add_{r['종목코드']}_{row_i}",
+                          use_container_width=True):
                 cur_p = float(r["현재가"])
-                add_to_watchlist(username=username, ticker=r["종목코드"],
+                rv = add_to_watchlist(username=username, ticker=r["종목코드"],
                     name=r["종목명"], source="수급",
                     entry=int(cur_p), target=int(cur_p*1.15),
-                    stoploss=int(cur_p*0.95),
+                    stoploss=int(cur_p*0.93),
                     market=r.get("시장",""),
                     scan_date=datetime.now().strftime("%Y-%m-%d"),
                     base_price=cur_p)
-                st.toast(f"✅ {r['종목명']} 관심종목 추가!")
+                st.toast(f"{'✅' if rv=='added' else '🔄'} {r['종목명']} 등록! (수급점수 {score:.0f}점)")
 
-    # 테이블
+    # 전체 테이블
     st.markdown("---")
-    st.dataframe(df_r[["종목명","종목코드","시장","기관보유(%)","거래량비율","기간수익률(%)","현재가"]],
-                 use_container_width=True, hide_index=True)
+    disp_cols = ["종목명","종목코드","시장","수급점수","수급태그",
+                 "기관보유(%)","외국인추정(%)","거래량비율","기간수익률(%)","현재가"]
+    st.dataframe(df_r[disp_cols], use_container_width=True, hide_index=True)
 
 
 def page_super_signal(username: str):
@@ -1785,7 +1980,7 @@ def page_super_signal(username: str):
     quant_list = st.session_state.get("quant_results", [])
     swing_list = st.session_state.get("swing_results", [])
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         q_ok = f"✅ {len(quant_list)}개" if quant_list else "❌ 미실행"
         q_col = "#34d399" if quant_list else "#f87171"
@@ -1802,15 +1997,31 @@ def page_super_signal(username: str):
             f'<div class="label">📈 스윙 스캐너</div>'
             f'<b style="color:{s_col}">{s_ok}</b></div>',
             unsafe_allow_html=True)
+    with c3:
+        sup_ok = f"✅ {len(supply_list)}개 (60점↑: {len(supply_codes)}개)" if supply_list else "❌ 미실행"
+        sup_col = "#34d399" if supply_list else "#f87171"
+        st.markdown(
+            f'<div class="card" style="text-align:center;">'
+            f'<div class="label">📡 수급 스캐너</div>'
+            f'<b style="color:{sup_col};font-size:0.85rem;">{sup_ok}</b></div>',
+            unsafe_allow_html=True)
 
     if not quant_list or not swing_list:
         st.warning("⚠️ 퀀트 스캐너와 스윙 스캐너를 **모두** 먼저 실행해 주세요!")
         return
 
+    # 수급 스캐너 데이터도 연동
+    supply_list  = st.session_state.get("supply_records", [])
+    supply_codes = {str(r.get("종목코드","")).zfill(6): r.get("수급점수",0)
+                    for r in supply_list if r.get("수급점수",0) >= 60}
+
     # 공통 종목 탐색
     quant_codes = {str(q.get("종목코드","")).zfill(6): q.get("종목명","") for q in quant_list}
     swing_codes = {str(s.get("종목코드","")).zfill(6): s.get("종목명","") for s in swing_list}
     common      = set(quant_codes.keys()) & set(swing_codes.keys())
+
+    # 수급 60점↑ 종목 별도 표시
+    supply_bonus = common & set(supply_codes.keys())
 
     st.markdown("---")
 
@@ -1968,6 +2179,7 @@ def page_super_signal(username: str):
             f'<span style="color:#94a3b8;font-size:0.75rem;margin-left:0.4rem;">{code}</span>'
             f'<span style="background:#fbbf2422;color:#fbbf24;border-radius:6px;'
             f'padding:2px 10px;font-size:0.75rem;margin-left:0.4rem;font-weight:700;">⚡ 슈퍼 시그널</span>'
+            f'{"<span style=\'background:#f8717122;color:#f87171;border-radius:6px;padding:2px 10px;font-size:0.75rem;margin-left:0.3rem;font-weight:700;\'>🔥수급"+str(supply_codes.get(code,0))+"점</span>" if code in supply_codes else ""}'  
             f'</div>'
             f'<div style="font-family:JetBrains Mono,monospace;font-size:1.05rem;'
             f'font-weight:700;color:#38bdf8;">{cur:,.0f}원</div>'
@@ -2346,28 +2558,23 @@ def main():
     if menu in ["🌅 모닝 체크"]:
         show_notification_bar(username)
 
-    # 페이지 라우팅 — 컨테이너로 감싸 깜빡임 방지
-    prev_menu = st.session_state.get("_prev_menu","")
-    if prev_menu != menu:
-        st.session_state["_prev_menu"] = menu
-
-    with st.container():
-        if menu == "📊 대시보드":
-            page_dashboard(username)
-        elif menu == "💼 내 포트폴리오":
-            page_portfolio(username)
-        elif menu == "🧮 퀀트 스캐너 2차 정밀":
-            page_quant(username)
-        elif menu == "📈 스윙 매매":
-            page_swing(username)
-        elif menu == "📡 수급 스캐너":
-            page_supply(username)
-        elif menu == "🚀 슈퍼 시그널":
-            page_super_signal(username)
-        elif menu == "🗄️ 관심종목":
-            page_vault(username)
-        elif menu == "🌅 모닝 체크":
-            page_morning(username)
+    # 페이지 라우팅
+    if menu == "📊 대시보드":
+        page_dashboard(username)
+    elif menu == "💼 내 포트폴리오":
+        page_portfolio(username)
+    elif menu == "🧮 퀀트 스캐너 2차 정밀":
+        page_quant(username)
+    elif menu == "📈 스윙 매매":
+        page_swing(username)
+    elif menu == "📡 수급 스캐너":
+        page_supply(username)
+    elif menu == "🚀 슈퍼 시그널":
+        page_super_signal(username)
+    elif menu == "🗄️ 관심종목":
+        page_vault(username)
+    elif menu == "🌅 모닝 체크":
+        page_morning(username)
 
 
 if __name__ == "__main__":
