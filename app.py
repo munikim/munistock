@@ -606,193 +606,65 @@ def get_ohlcv_cached(ticker: str, days: int = 130):
 
 
 def show_login():
-    st.markdown("""
-    <div style='text-align:center; padding: 3rem 0 1rem;'>
-        <div style='font-size:3rem;'>📈</div>
-        <h1 style='color:#4e9eff; font-size:1.8rem; margin:0.5rem 0;'>스윙 대시보드</h1>
-        <p style='color:#8892a4;'>로그인하여 시작하세요</p>
-    </div>
-    """, unsafe_allow_html=True)
+    """로그인 화면 — 방어적 렌더링"""
+    try:
+        st.markdown(
+            '<div style="max-width:380px;margin:3rem auto;">'
+            '<div class="card" style="border-top:3px solid #6366f1;padding:2rem;">'
+            '<div style="text-align:center;margin-bottom:1.5rem;">'
+            '<div style="font-size:2.5rem;">📈</div>'
+            '<h2 style="margin:0.3rem 0;font-size:1.4rem;">스윙 대시보드</h2>'
+            '<div style="color:#94a3b8;font-size:0.85rem;">로그인하여 시작하세요</div>'
+            '</div>', unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        users = load_users()
-        tab1, tab2 = st.tabs(["🔐 로그인", "📝 회원가입"])
+        with st.form("login_form", clear_on_submit=False):
+            uid = st.text_input("아이디", placeholder="admin")
+            pw  = st.text_input("비밀번호", type="password", placeholder="1234")
+            submitted = st.form_submit_button("🔐 로그인", use_container_width=True)
 
-        with tab1:
-            username = st.text_input("아이디", key="login_id")
-            password = st.text_input("비밀번호", type="password", key="login_pw")
-            if st.button("로그인", key="btn_login"):
-                if username in users and users[username]["pw"] == hash_pw(password):
-                    st.session_state["user"] = username
-                    st.session_state["seed"] = users[username].get("seed", 2_000_000)
+        st.markdown('</div></div>', unsafe_allow_html=True)
+
+        if submitted:
+            try:
+                users = load_users()
+                if uid in users and users[uid].get("pw") == hash_pw(pw):
+                    st.session_state["user"] = uid
+                    st.session_state["seed"] = users[uid].get("seed", 2_000_000)
+                    st.session_state["login_ok"] = True
                     st.rerun()
                 else:
                     st.error("아이디 또는 비밀번호가 틀렸습니다.")
-            st.caption("기본 계정: admin / 1234")
+            except Exception as e:
+                st.error(f"로그인 오류: {e}")
 
-        with tab2:
-            new_id  = st.text_input("새 아이디", key="reg_id")
-            new_pw  = st.text_input("새 비밀번호", type="password", key="reg_pw")
-            new_pw2 = st.text_input("비밀번호 확인", type="password", key="reg_pw2")
-            if st.button("회원가입", key="btn_reg"):
-                if not new_id or not new_pw:
-                    st.error("아이디와 비밀번호를 입력하세요.")
-                elif new_pw != new_pw2:
-                    st.error("비밀번호가 일치하지 않습니다.")
-                elif new_id in users:
-                    st.error("이미 존재하는 아이디입니다.")
-                else:
-                    users[new_id] = {"pw": hash_pw(new_pw), "seed": 2_000_000}
-                    save_users(users)
-                    st.success("가입 완료! 로그인하세요.")
+        st.caption("기본 계정: admin / 1234")
 
-# ════════════════════════════════════════════════════════════
-#  알림바
-# ════════════════════════════════════════════════════════════
-def calc_atr_targets(ticker: str, atr_mult_stop: float = 2.0,
-                      atr_mult_target: float = 6.0) -> dict:
-    """ATR 기반 손절/익절 자동 계산"""
-    try:
-        df = get_ohlcv_cached(ticker, days=30)
-        if df is None or len(df) < 15:
-            return {}
-        import ta
-        atr_ind = ta.volatility.AverageTrueRange(
-            df["high"], df["low"], df["close"], window=14)
-        df["atr"] = atr_ind.average_true_range()
-        df = df.fillna(0)
-        row     = df.iloc[-1]
-        cur     = float(row["close"])
-        atr_val = float(row["atr"])
-        if atr_val <= 0 or cur <= 0:
-            return {}
-        return {
-            "cur":        cur,
-            "atr":        round(atr_val, 2),
-            "atr_pct":    round(atr_val/cur*100, 2),
-            "stoploss":   round(cur - atr_val * atr_mult_stop, 0),
-            "target":     round(cur + atr_val * atr_mult_target, 0),
-            "stop_mult":  atr_mult_stop,
-            "tgt_mult":   atr_mult_target,
-        }
-    except Exception:
-        return {}
-
-def calc_trailing_stop(ticker: str, buy_price: float,
-                        buy_date: str, atr_mult: float = 2.0,
-                        saved_high: float = 0.0) -> dict:
-    """
-    트레일링 스탑 계산
-    - 매수 이후 최고가 추적
-    - 손절가 = max(초기ATR손절, 최고가 - ATR*배수)
-    - 주가 상승 시 손절가 상향, 하락 시 고정
-    """
-    try:
-        df = get_ohlcv_cached(ticker, days=120)
-        if df is None or len(df) < 15:
-            return {}
-
-        import ta
-        atr_ind  = ta.volatility.AverageTrueRange(
-            df["high"], df["low"], df["close"], window=14)
-        df["atr"] = atr_ind.average_true_range()
-        df = df.ffill().fillna(0)
-
-        cur_price = float(df["close"].iloc[-1])
-        atr_val   = float(df["atr"].iloc[-1])
-
-        # 매수일 이후 데이터 필터링
-        try:
-            buy_dt = pd.to_datetime(buy_date)
-            df_after = df[df.index >= buy_dt]
-        except Exception:
-            df_after = df
-
-        # 매수 이후 최고가
-        if len(df_after) > 0 and "high" in df_after.columns:
-            peak_high = float(df_after["high"].max())
-        else:
-            peak_high = buy_price
-
-        # saved_high와 비교해 더 높은 값 사용 (이전 세션 최고가 유지)
-        peak_high = max(peak_high, saved_high, buy_price)
-
-        # 초기 ATR 손절가 (매수가 기준)
-        initial_sl = buy_price - atr_val * atr_mult
-
-        # 트레일링 손절가 (최고가 기준) — 초기 손절가보다 낮으면 초기값 유지
-        trailing_sl = max(initial_sl, peak_high - atr_val * atr_mult)
-
-        # 수익률
-        pnl_pct = (cur_price - buy_price) / buy_price * 100 if buy_price else 0
-
-        # 트레일링 진행률 (얼마나 올라갔는지)
-        trail_progress = (peak_high - buy_price) / (atr_val * atr_mult) * 100 if atr_val else 0
-
-        return {
-            "cur":          cur_price,
-            "atr":          round(atr_val, 2),
-            "peak_high":    round(peak_high, 0),
-            "initial_sl":   round(initial_sl, 0),
-            "trailing_sl":  round(trailing_sl, 0),
-            "trail_raised": trailing_sl > initial_sl,  # 손절가가 올라갔는지
-            "sl_triggered": cur_price <= trailing_sl,  # 손절 발동 여부
-            "pnl_pct":      round(pnl_pct, 2),
-            "trail_pct":    round(trail_progress, 1),
-        }
+        with st.expander("📝 회원가입"):
+            try:
+                with st.form("signup_form"):
+                    new_id = st.text_input("새 아이디")
+                    new_pw = st.text_input("새 비밀번호", type="password")
+                    new_pw2= st.text_input("비밀번호 확인", type="password")
+                    if st.form_submit_button("가입"):
+                        if new_pw != new_pw2:
+                            st.error("비밀번호가 일치하지 않습니다.")
+                        elif len(new_id) < 2:
+                            st.error("아이디는 2자 이상이어야 합니다.")
+                        else:
+                            users = load_users()
+                            if new_id in users:
+                                st.error("이미 사용 중인 아이디입니다.")
+                            else:
+                                users[new_id] = {"pw": hash_pw(new_pw), "seed": 2_000_000}
+                                save_users(users)
+                                st.success("✅ 가입 완료! 로그인해 주세요.")
+            except Exception as e:
+                st.error(f"회원가입 오류: {e}")
     except Exception as e:
-        return {}
-
-def load_notifications(username: str) -> list:
-    f = user_file(username, "notifications.json")
-    try:
-        if os.path.exists(f):
-            data = json.load(open(f, encoding="utf-8"))
-            return data if isinstance(data, list) else []
-    except: pass
-    return []
-
-def add_notification(username: str, msg: str, level: str = "info"):
-    """알림 추가 (최근 30개 유지)"""
-    try:
-        nots = load_notifications(username)
-        nots.insert(0, {"msg": msg, "level": level,
-                        "time": datetime.now().strftime("%H:%M")})
-        nots = nots[:30]
-        path = user_file(username, "notifications.json")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        json.dump(nots, open(path, "w", encoding="utf-8"),
-                  ensure_ascii=False, indent=2)
-    except: pass
-
-def send_telegram(message: str):
-    """텔레그램 메시지 전송 (st.secrets 기반)"""
-    token   = _get_tg_token()
-    chat_id = _get_tg_chat_id()
-    if not token or not chat_id:
-        st.warning("텔레그램 설정이 없습니다. .streamlit/secrets.toml을 확인하세요.")
-        return
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML"
-        }, timeout=10, verify=False)
-        if resp.status_code != 200:
-            st.warning(f"텔레그램 오류: {resp.text[:100]}")
-    except Exception as e:
-        st.warning(f"텔레그램 전송 실패: {e}")
+        st.error(f"화면 오류: {e}")
+        st.write("새로고침 해주세요.")
 
 
-def show_notification_bar(username: str):
-    """알림바 — 비활성화됨 (모닝체크 카드로 대체)"""
-    pass
-
-# ════════════════════════════════════════════════════════════
-#  [1] 대시보드
-# ════════════════════════════════════════════════════════════
 def page_dashboard(username: str):
     st.markdown("## 📊 대시보드")
 
@@ -864,39 +736,42 @@ def page_dashboard(username: str):
 
     st.markdown("<div style='margin:0.6rem 0'></div>", unsafe_allow_html=True)
 
-    # 차트
+    # 차트 — 오류 시 건너뜀
     if rows:
-        ch1, ch2 = st.columns(2)
-        with ch1:
-            labels = [r["name"] for r in rows]
-            values = [r["cur_price"]*int(r.get("qty",1)) for r in rows]
-            colors = ["#38bdf8","#34d399","#fbbf24","#f87171","#a78bfa","#fb923c"]
-            fig_p  = go.Figure(go.Pie(
-                labels=labels, values=values, hole=0.55,
-                marker=dict(colors=colors[:len(labels)]),
-                textfont=dict(size=11, color="#e2e8f0"),
-            ))
-            fig_p.update_layout(
-                title=dict(text="포트폴리오 구성", font=dict(color="#94a3b8",size=13)),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                legend=dict(font=dict(color="#94a3b8",size=11)),
-                margin=dict(t=40,b=10,l=10,r=10), height=230)
-            st.plotly_chart(fig_p, use_container_width=True)
-        with ch2:
-            pnls     = [r["pnl"] for r in rows]
-            bar_cols = ["#38bdf8" if p>=0 else "#f87171" for p in pnls]
-            fig_b    = go.Figure(go.Bar(
-                x=[r["name"] for r in rows], y=pnls, marker_color=bar_cols,
-                text=[f'{sg(p)}{p:,.0f}원' for p in pnls],
-                textposition="outside", textfont=dict(color="#e2e8f0", size=10),
-            ))
-            fig_b.update_layout(
-                title=dict(text="종목별 손익", font=dict(color="#94a3b8",size=13)),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                yaxis=dict(gridcolor="#2d3748", color="#94a3b8", tickfont=dict(size=10)),
-                xaxis=dict(color="#94a3b8", tickfont=dict(size=10)),
-                margin=dict(t=40,b=10,l=10,r=10), height=230, showlegend=False)
-            st.plotly_chart(fig_b, use_container_width=True)
+        try:
+            ch1, ch2 = st.columns(2)
+            with ch1:
+                labels = [r["name"] for r in rows]
+                values = [r["cur_price"]*int(r.get("qty",1)) for r in rows]
+                colors = ["#38bdf8","#34d399","#fbbf24","#f87171","#a78bfa","#fb923c"]
+                fig_p  = go.Figure(go.Pie(
+                    labels=labels, values=values, hole=0.55,
+                    marker=dict(colors=colors[:len(labels)]),
+                    textfont=dict(size=11, color="#e2e8f0"),
+                ))
+                fig_p.update_layout(
+                    title=dict(text="포트폴리오 구성", font=dict(color="#94a3b8",size=13)),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    legend=dict(font=dict(color="#94a3b8",size=11)),
+                    margin=dict(t=40,b=10,l=10,r=10), height=230)
+                st.plotly_chart(fig_p, use_container_width=True)
+            with ch2:
+                pnls     = [r["pnl"] for r in rows]
+                bar_cols = ["#38bdf8" if p>=0 else "#f87171" for p in pnls]
+                fig_b    = go.Figure(go.Bar(
+                    x=[r["name"] for r in rows], y=pnls, marker_color=bar_cols,
+                    text=[f'{sg(p)}{p:,.0f}원' for p in pnls],
+                    textposition="outside", textfont=dict(color="#e2e8f0", size=10),
+                ))
+                fig_b.update_layout(
+                    title=dict(text="종목별 손익", font=dict(color="#94a3b8",size=13)),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    yaxis=dict(gridcolor="#2d3748", color="#94a3b8", tickfont=dict(size=10)),
+                    xaxis=dict(color="#94a3b8", tickfont=dict(size=10)),
+                    margin=dict(t=40,b=10,l=10,r=10), height=230, showlegend=False)
+                st.plotly_chart(fig_b, use_container_width=True)
+        except Exception as _chart_err:
+            st.caption(f"차트 로딩 실패: {_chart_err}")
 
     # 날짜 표시
     st.caption(f"기준일: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -907,7 +782,7 @@ def page_portfolio(username: str):
 
     # ATR 배수 설정 (사이드바)
     with st.sidebar:
-        st.markdown("### ⚙️ ATR 설정")
+        st.markdown("###⚙️ ATR 설정")
         atr_stop = st.number_input("손절 ATR 배수", value=2.0, step=0.5, min_value=0.5,
                                     help="손절가 = 현재가 - ATR × 배수")
         atr_tgt  = st.number_input("익절 ATR 배수", value=6.0, step=0.5, min_value=1.0,
@@ -1000,6 +875,7 @@ def page_portfolio(username: str):
     st.markdown("### 📋 보유 종목 현황")
     st.caption("🔺 트레일링 스탑: 최고가 기준으로 손절선이 자동 상향, 하락 시 고정")
 
+    st.caption("🔄 현재가 조회 중...")
     total_cost, total_cur = 0.0, 0.0
     for p in holding:
         qty_n     = int(p.get("qty",1))
@@ -1009,25 +885,31 @@ def page_portfolio(username: str):
 
         # ── 트레일링 스탑 실시간 계산 ─────────────────────────
         saved_high = float(p.get("peak_high", buy_price))
-        trail = calc_trailing_stop(
-            p["ticker"], buy_price,
-            p.get("date",""), atr_stop, saved_high)
+        try:
+            trail = calc_trailing_stop(
+                p["ticker"], buy_price,
+                p.get("date",""), atr_stop, saved_high)
+        except Exception:
+            trail = {}
 
         if trail:
-            cur          = trail["cur"]
-            atr_val      = trail["atr"]
-            peak_high    = trail["peak_high"]
-            initial_sl   = trail["initial_sl"]
-            trailing_sl  = trail["trailing_sl"]
-            trail_raised = trail["trail_raised"]
-            sl_triggered = trail["sl_triggered"]
-            trail_pct    = trail["trail_pct"]
-            # 최고가 저장 (세션 간 유지)
-            for item in portfolio:
-                if item["id"]==p["id"] and peak_high > item.get("peak_high",0):
-                    item["peak_high"] = peak_high
-            save_portfolio(username, portfolio)
-        else:
+            try:
+                cur          = trail["cur"]
+                atr_val      = trail["atr"]
+                peak_high    = trail["peak_high"]
+                initial_sl   = trail["initial_sl"]
+                trailing_sl  = trail["trailing_sl"]
+                trail_raised = trail["trail_raised"]
+                sl_triggered = trail["sl_triggered"]
+                trail_pct    = trail["trail_pct"]
+                for item in portfolio:
+                    if item["id"]==p["id"] and peak_high > item.get("peak_high",0):
+                        item["peak_high"] = peak_high
+                try: save_portfolio(username, portfolio)
+                except Exception: pass
+            except Exception:
+                trail = {}
+        if not trail:
             cur          = float(get_price(p["ticker"]) or buy_price)
             atr_val      = p.get("atr_val",0)
             peak_high    = buy_price
@@ -2508,27 +2390,37 @@ def page_morning(username: str):
 #  메인
 # ════════════════════════════════════════════════════════════
 def main():
-    # 앱 초기화 (최초 1회)
+    """메인 — 방어적 라우팅. 어떤 오류도 검은 화면이 아닌 메시지로 표시."""
+    import traceback as _tb
+
+    # ── 앱 초기화 (최초 1회) ─────────────────────────────────
     if "app_initialized" not in st.session_state:
-        _init_data_dir()
+        try:
+            _init_data_dir()
+        except Exception:
+            pass
         st.session_state["app_initialized"] = True
 
-    # 로그인 체크
-    if "user" not in st.session_state:
-        show_login()
+    # ── 로그인 체크 ──────────────────────────────────────────
+    if not st.session_state.get("user"):
+        try:
+            show_login()
+        except Exception as e:
+            st.error(f"로그인 화면 오류: {e}")
         return
 
     username = st.session_state["user"]
 
-    # 사이드바
+    # ── 사이드바 ─────────────────────────────────────────────
     with st.sidebar:
-        st.markdown(f"""
-        <div style="text-align:center; padding:1rem 0 0.5rem;">
-            <div style="font-size:2rem;">📈</div>
-            <div style="font-weight:700; color:#4e9eff;">스윙 대시보드</div>
-            <div style="color:#8892a4; font-size:0.8rem;">👤 {username}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="text-align:center;padding:0.8rem 0;">'
+            f'<div style="font-size:1.8rem;">📈</div>'
+            f'<div style="font-weight:700;font-size:1rem;">스윙 대시보드</div>'
+            f'<div style="color:#94a3b8;font-size:0.75rem;margin-top:0.2rem;">'
+            f'👤 {username}</div>'
+            f'</div>', unsafe_allow_html=True)
+
         st.divider()
 
         menu = st.radio("메뉴", [
@@ -2543,46 +2435,46 @@ def main():
         ], label_visibility="collapsed")
 
         st.divider()
-        if st.button("🔔 알림 초기화"):
-            json.dump([], open(user_file(username,"notifications.json"),"w"))
+        if st.button("🔔 알림 초기화", use_container_width=True):
+            try:
+                json.dump([], open(user_file(username, "notifications.json"), "w",
+                                   encoding="utf-8"))
+                st.toast("알림 초기화 완료")
+            except Exception: pass
+        if st.button("🚪 로그아웃", use_container_width=True):
+            for k in ["user","seed","login_ok"]:
+                st.session_state.pop(k, None)
             st.rerun()
-        if st.button("🚪 로그아웃"):
-            del st.session_state["user"]
-            st.rerun()
+        st.caption(datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-        st.markdown(f"""
-        <div style="color:#8892a4; font-size:0.75rem; margin-top:1rem;">
-            {datetime.now().strftime("%Y-%m-%d %H:%M")}
-        </div>
-        """, unsafe_allow_html=True)
+    # ── 사이드바 모닝체크 알림 ───────────────────────────────
+    try:
+        if menu == "🌅 모닝 체크":
+            show_notification_bar(username)
+    except Exception:
+        pass
 
-    # 알림바 — 모닝체크/관심종목 탭에서만 표시
-    if menu in ["🌅 모닝 체크"]:
-        show_notification_bar(username)
-
-    # 페이지 라우팅 — 전체 try-except 보호
-    import traceback as _tb
-    _page_fns = {
-        "📊 대시보드":          page_dashboard,
-        "💼 내 포트폴리오":     page_portfolio,
+    # ── 페이지 라우팅 — dict 방식, 전체 try-except ────────────
+    _pages = {
+        "📊 대시보드":           page_dashboard,
+        "💼 내 포트폴리오":      page_portfolio,
         "🧮 퀀트 스캐너 2차 정밀": page_quant,
-        "📈 스윙 매매":         page_swing,
+        "📈 스윙 매매":          page_swing,
         "📡 수급 기반 스윙 스캐너": page_supply_swing,
-        "🚀 슈퍼 시그널":       page_super_signal,
-        "🗄️ 관심종목":          page_vault,
-        "🌅 모닝 체크":         page_morning,
+        "🚀 슈퍼 시그널":        page_super_signal,
+        "🗄️ 관심종목":           page_vault,
+        "🌅 모닝 체크":          page_morning,
     }
-    _fn = _page_fns.get(menu)
-    if _fn:
-        try:
-            _fn(username)
-        except Exception as _page_err:
-            st.error(f"⚠️ 페이지 오류: {type(_page_err).__name__}: {_page_err}")
-            st.info("다른 메뉴를 눌렀다가 다시 와보거나 새로고침 해주세요.")
-            with st.expander("상세 오류 (개발자용)"):
-                st.code(_tb.format_exc())
-    else:
-        page_dashboard(username)
+
+    fn = _pages.get(menu, page_dashboard)
+    try:
+        fn(username)
+    except Exception as _err:
+        # 검은 화면 대신 반드시 무언가 표시
+        st.error(f"⚠️ [{menu}] 페이지 오류: {type(_err).__name__}: {_err}")
+        st.warning("다른 메뉴를 눌렀다가 다시 시도하거나, 새로고침 해주세요.")
+        with st.expander("🔍 상세 오류 (개발자용)", expanded=False):
+            st.code(_tb.format_exc())
 
 
 if __name__ == "__main__":
