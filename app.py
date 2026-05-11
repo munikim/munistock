@@ -580,6 +580,35 @@ def show_login():
 # ════════════════════════════════════════════════════════════
 #  알림바
 # ════════════════════════════════════════════════════════════
+def calc_atr_targets(ticker: str, atr_mult_stop: float = 2.0,
+                      atr_mult_target: float = 6.0) -> dict:
+    """ATR 기반 손절/익절 자동 계산"""
+    try:
+        df = get_ohlcv_cached(ticker, days=30)
+        if df is None or len(df) < 15:
+            return {}
+        import ta
+        atr_ind = ta.volatility.AverageTrueRange(
+            df["high"], df["low"], df["close"], window=14)
+        df["atr"] = atr_ind.average_true_range()
+        df = df.fillna(0)
+        row     = df.iloc[-1]
+        cur     = float(row["close"])
+        atr_val = float(row["atr"])
+        if atr_val <= 0 or cur <= 0:
+            return {}
+        return {
+            "cur":        cur,
+            "atr":        round(atr_val, 2),
+            "atr_pct":    round(atr_val/cur*100, 2),
+            "stoploss":   round(cur - atr_val * atr_mult_stop, 0),
+            "target":     round(cur + atr_val * atr_mult_target, 0),
+            "stop_mult":  atr_mult_stop,
+            "tgt_mult":   atr_mult_target,
+        }
+    except Exception:
+        return {}
+
 def load_notifications(username: str) -> list:
     f = user_file(username, "notifications.json")
     try:
@@ -657,7 +686,7 @@ def page_dashboard(username: str):
 
     unrealized    = total_cur - total_cost
     total_pnl     = unrealized + realized
-    total_pnl_pct = total_pnl/TOTAL_SEED*100 if TOTAL_SEED else 0
+    total_pnl_pct = total_pnl/total_cost*100 if total_cost else 0  # 투자액 기준
 
     def cc(v): return "#38bdf8" if v>=0 else "#f87171"
     def sg(v): return "+" if v>=0 else ""
@@ -734,64 +763,77 @@ def page_dashboard(username: str):
                 margin=dict(t=40,b=10,l=10,r=10), height=230, showlegend=False)
             st.plotly_chart(fig_b, use_container_width=True)
 
-    # 시드 요약 바
-    remaining = TOTAL_SEED - total_cost + unrealized + realized
-    st.markdown(
-        f'<div class="card" style="border-left:4px solid #2d3748;">'
-        f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;'
-        f'gap:0.6rem;font-size:0.82rem;">'
-        f'<div><div class="label">💰 시드머니</div><b class="mono">{TOTAL_SEED:,}원</b></div>'
-        f'<div><div class="label">📊 투입률</div><b class="mono profit-color">{total_cost/TOTAL_SEED*100:.1f}%</b></div>'
-        f'<div><div class="label">💵 평가 자산</div><b class="mono">{remaining:,.0f}원</b></div>'
-        f'<div><div class="label">📅 기준일</div>'
-        f'<span style="color:#94a3b8">{datetime.now().strftime("%Y-%m-%d")}</span></div>'
-        f'</div></div>', unsafe_allow_html=True)
+    # 날짜 표시
+    st.caption(f"기준일: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 
 def page_portfolio(username: str):
     st.markdown("## 💼 내 포트폴리오")
-    portfolio = load_portfolio(username)
 
-    # 매매 기록 입력
+    # ATR 배수 설정 (사이드바)
+    with st.sidebar:
+        st.markdown("### ⚙️ ATR 설정")
+        atr_stop = st.number_input("손절 ATR 배수", value=2.0, step=0.5, min_value=0.5,
+                                    help="손절가 = 현재가 - ATR × 배수")
+        atr_tgt  = st.number_input("익절 ATR 배수", value=6.0, step=0.5, min_value=1.0,
+                                    help="익절가 = 현재가 + ATR × 배수")
+
+    portfolio = load_portfolio(username)
+    if fix_portfolio_realized(username):
+        st.toast("📌 데이터 정상화 완료")
+
+    # ── 매매 기록 추가 ────────────────────────────────────────
     with st.expander("➕ 매매 기록 추가", expanded=False):
         with st.spinner("종목 목록 불러오는 중..."):
             stock_df = get_stock_list()
 
         if stock_df.empty:
-            st.warning("종목 목록 불러오기 실패. 직접 입력하세요.")
-            sel_name   = st.text_input("종목명")
-            sel_ticker = st.text_input("종목코드")
+            sel_name, sel_ticker = st.text_input("종목명"), st.text_input("종목코드")
         else:
-            selected = st.selectbox("🔍 종목 검색 (종목명 입력)", stock_df["display"].tolist(),
+            selected = st.selectbox("🔍 종목 검색", stock_df["display"].tolist(),
                                     index=None, placeholder="종목명을 입력하세요...")
             if selected:
-                matched    = stock_df[stock_df["display"] == selected].iloc[0]
+                matched    = stock_df[stock_df["display"]==selected].iloc[0]
                 sel_name   = matched["name"]
                 sel_ticker = matched["code"]
-                info_html  = f'<div style="background:#1a1f2e;border:1px solid #2d3561;border-radius:8px;padding:0.6rem 1rem;margin:0.3rem 0;font-size:0.88rem;color:#4e9eff;">✅ <b>{sel_name}</b> | 코드: <b>{sel_ticker}</b> | {matched["market"]}</div>'
-                st.markdown(info_html, unsafe_allow_html=True)
+                st.markdown(
+                    f'<div style="background:#1e2535;border:1px solid #2d3748;'
+                    f'border-radius:8px;padding:0.5rem 1rem;font-size:0.85rem;color:#38bdf8;">'
+                    f'✅ <b>{sel_name}</b> | {sel_ticker} | {matched["market"]}</div>',
+                    unsafe_allow_html=True)
             else:
                 sel_name, sel_ticker = "", ""
 
-        c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
-        with c1:
-            trade_dt = st.date_input("거래일", value=datetime.today())
-        with c2:
-            qty = st.number_input("보유수량 (주)", min_value=1, value=1, step=1)
-        with c3:
-            total_amount = st.number_input("총 매수금액 (원)", min_value=0, value=0, step=10000,
-                                           help="실제 매수에 사용한 총 금액")
-        with c4:
-            kind = st.selectbox("구분", ["매수", "매도"])
+        c1, c2, c3, c4 = st.columns([2,1,2,1])
+        with c1: trade_dt     = st.date_input("거래일", value=datetime.today())
+        with c2: qty          = st.number_input("수량(주)", min_value=1, value=1, step=1)
+        with c3: total_amount = st.number_input("총 매수금액(원)", min_value=0, value=0, step=10000)
+        with c4: kind         = st.selectbox("구분", ["매수","매도"])
 
-        if qty > 0 and total_amount > 0:
-            avg_price = total_amount / qty
-            avg_html  = f'<div style="background:#0f3460;border-radius:8px;padding:0.5rem 1rem;font-size:0.88rem;color:#4e9eff;margin:0.3rem 0;">💡 자동 계산 평단가: <b style="color:white">{avg_price:,.0f}원/주</b> &nbsp;|&nbsp; 총 매수금액: <b style="color:white">{total_amount:,.0f}원</b></div>'
-            st.markdown(avg_html, unsafe_allow_html=True)
-        else:
-            avg_price = 0
+        avg_price = total_amount / qty if qty > 0 and total_amount > 0 else 0
 
-        if st.button("💾 기록 저장", disabled=(not sel_name or avg_price == 0)):
+        # ATR 기반 자동 손절/익절 계산
+        atr_info = {}
+        if sel_ticker and avg_price > 0:
+            with st.spinner("ATR 계산 중..."):
+                atr_info = calc_atr_targets(sel_ticker, atr_stop, atr_tgt)
+
+            if atr_info:
+                a1,a2,a3,a4 = st.columns(4)
+                a1.metric("평단가", f"{avg_price:,.0f}원")
+                a2.metric("ATR값", f"{atr_info['atr']:,.0f}원 ({atr_info['atr_pct']:.1f}%)")
+                a3.metric(f"🛑 손절({atr_stop}ATR)", f"{atr_info['stoploss']:,.0f}원",
+                          delta=f"{(atr_info['stoploss']-avg_price)/avg_price*100:.1f}%",
+                          delta_color="inverse")
+                a4.metric(f"🎯 익절({atr_tgt}ATR)", f"{atr_info['target']:,.0f}원",
+                          delta=f"+{(atr_info['target']-avg_price)/avg_price*100:.1f}%")
+            else:
+                if avg_price:
+                    st.caption("ATR 계산 불가 — 기본값 적용 (손절-7%, 익절+20%)")
+
+        if st.button("💾 기록 저장", disabled=(not sel_name or avg_price==0)):
+            sl = int(atr_info.get("stoploss", avg_price*0.93))
+            tg = int(atr_info.get("target",   avg_price*1.20))
             entry = {
                 "id":           int(time.time()),
                 "kind":         kind,
@@ -801,144 +843,146 @@ def page_portfolio(username: str):
                 "qty":          int(qty),
                 "buy_price":    round(avg_price, 2),
                 "total_amount": int(total_amount),
-                "status":       "보유" if kind == "매수" else "청산",
+                "stoploss_atr": sl,
+                "target_atr":   tg,
+                "atr_val":      atr_info.get("atr", 0),
+                "atr_stop_mult":atr_stop,
+                "atr_tgt_mult": atr_tgt,
+                "status":       "보유" if kind=="매수" else "청산",
                 "realized_pnl": 0,
             }
             portfolio.append(entry)
             save_portfolio(username, portfolio)
-            st.success(f"✅ {sel_name} {kind} 기록 저장! (평단가: {avg_price:,.0f}원)")
+            st.success(f"✅ {sel_name} 저장! 손절:{sl:,} / 익절:{tg:,}")
             st.rerun()
 
-    # 보유 종목 리스트
-    active = [p for p in portfolio if p.get("status") == "보유"]
-    if not active:
+    # ── 보유 종목 현황 ────────────────────────────────────────
+    holding = [p for p in portfolio if p.get("status")=="보유"]
+    if not holding:
         st.info("보유 중인 종목이 없습니다.")
         return
 
     st.markdown("### 📋 보유 종목 현황")
 
-    for p in active:
-        cur     = get_price(p["ticker"])
-        cost    = p["buy_price"] * p["qty"]
-        val     = (cur or p["buy_price"]) * p["qty"]
-        pnl     = val - cost
-        pnl_pct = pnl / cost * 100 if cost else 0
+    total_cost, total_cur = 0.0, 0.0
+    for p in holding:
+        qty_n     = int(p.get("qty",1))
+        buy_price = float(p.get("buy_price",0))
+        cost      = float(p.get("total_amount", buy_price*qty_n))
+        cur       = float(get_price(p["ticker"]) or buy_price)
+        val       = cur * qty_n
+        pnl       = val - cost
+        pnl_pct   = pnl/cost*100 if cost else 0
+        total_cost += cost
+        total_cur  += val
 
-        # 매매 가이드 계산
-        df_hist = get_ohlcv_cached(p["ticker"], days=60)
-        high20  = df_hist["high"].rolling(20).max().iloc[-1] if df_hist is not None and len(df_hist) >= 20 else None
-        ma20    = df_hist["close"].rolling(20).mean().iloc[-1] if df_hist is not None and len(df_hist) >= 20 else None
-        target  = p["buy_price"] * 1.20
-        stoploss_pct = p["buy_price"] * 0.93
-        stoploss = max(stoploss_pct, ma20) if ma20 else stoploss_pct
+        # ATR 기반 손절/익절 (저장된 값 or 실시간 재계산)
+        sl   = p.get("stoploss_atr", int(buy_price*0.93))
+        tg   = p.get("target_atr",   int(buy_price*1.20))
+        atr  = p.get("atr_val", 0)
+        smul = p.get("atr_stop_mult", atr_stop)
+        tmul = p.get("atr_tgt_mult",  atr_tgt)
 
-        # 알림은 모닝체크/관심종목 탭에서만 발생
+        cc_  = "#38bdf8" if pnl>=0 else "#f87171"
+        sg_  = "+" if pnl>=0 else ""
 
-        # 상태 색상
-        if pnl_pct >= 20:
-            border = "#00d4aa"; badge = "🎯 익절 구간"
-        elif pnl_pct <= -7:
-            border = "#ff4b6e"; badge = "🚨 손절 구간"
-        elif pnl_pct <= -3:
-            border = "#ffd766"; badge = "⚠️ 주의"
-        else:
-            border = "#4e9eff"; badge = "📌 보유 중"
+        # 상태 판정
+        if cur <= sl:   badge, bc = "🚨 손절선 이탈!", "#f87171"
+        elif cur >= tg: badge, bc = "🎯 익절 도달!", "#34d399"
+        elif (cur-sl)/(tg-sl) > 0.7 if tg>sl else False:
+            badge, bc = "📈 목표 근접", "#fbbf24"
+        else:           badge, bc = "⏳ 보유중", "#94a3b8"
 
-        blink = 'class="blink-row"' if pnl_pct <= -7 or pnl_pct >= 20 else ''
+        st.markdown(
+            f'<div class="card" style="border-left:4px solid {cc_};">'
+            f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+            f'<div>'
+            f'<b style="font-size:1rem;">{p["name"]}</b>'
+            f'<span style="color:#94a3b8;font-size:0.75rem;margin-left:0.4rem;">{p["ticker"]}</span>'
+            f'<span style="background:{bc}22;color:{bc};border-radius:5px;'
+            f'padding:2px 8px;font-size:0.72rem;margin-left:0.4rem;">{badge}</span>'
+            f'</div>'
+            f'<div style="text-align:right;">'
+            f'<div style="color:{cc_};font-family:JetBrains Mono,monospace;'
+            f'font-weight:900;font-size:1.2rem;">{sg_}{pnl_pct:.2f}%</div>'
+            f'<div style="color:{cc_};font-size:0.8rem;">{sg_}{pnl:,.0f}원</div>'
+            f'</div></div>'
+            f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+            f'gap:0.4rem;margin-top:0.6rem;font-size:0.8rem;">'
+            f'<div><div class="label">평단가</div>'
+            f'<b class="mono">{buy_price:,.0f}원</b></div>'
+            f'<div><div class="label">현재가</div>'
+            f'<b class="mono" style="color:{cc_}">{cur:,.0f}원</b></div>'
+            f'<div><div class="label">수량</div>'
+            f'<b>{qty_n}주</b></div>'
+            f'<div><div class="label">ATR({atr:,.0f}원)</div>'
+            f'<b style="color:#94a3b8">{atr/cur*100:.1f}%</b></div>'
+            f'</div>'
+            f'</div>', unsafe_allow_html=True)
 
-        sign = "+" if pnl >= 0 else ""
-        pnl_col = "#00d4aa" if pnl >= 0 else "#ff4b6e"
+        # 매매 가이드 접기
+        with st.expander(f"📋 {p['name']} 매매 가이드 (ATR 기반)", expanded=False):
+            g1,g2,g3,g4 = st.columns(4)
+            g1.metric(f"🛑 손절({smul}ATR)", f"{sl:,}원",
+                      delta=f"{(sl-cur)/cur*100:.1f}%", delta_color="inverse")
+            g2.metric(f"🎯 익절({tmul}ATR)", f"{tg:,}원",
+                      delta=f"+{(tg-cur)/cur*100:.1f}%")
+            g3.metric("현재 손익비",
+                      f"{(tg-cur)/(cur-sl):.1f}배" if cur>sl else "—")
+            g4.metric("ATR값", f"{atr:,.0f}원")
 
-        st.markdown(f"""
-        <div {blink} style="
-            background:#1a1f2e; border:1px solid {border};
-            border-left: 4px solid {border};
-            border-radius:12px; padding:1rem; margin:0.5rem 0;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                    <span style="font-weight:700; font-size:1.05rem;">{p['name']}</span>
-                    <span style="color:#8892a4; font-size:0.8rem; margin-left:0.5rem;">{p['ticker']}</span>
-                    <span style="background:{border}22; color:{border}; border-radius:6px;
-                        padding:2px 8px; font-size:0.75rem; margin-left:0.5rem;">{badge}</span>
-                </div>
-                <div style="color:{pnl_col}; font-family:'JetBrains Mono',monospace;
-                    font-weight:700; font-size:1.1rem;">
-                    {sign}{pnl_pct:.2f}%
-                </div>
-            </div>
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.5rem; margin-top:0.8rem; font-size:0.85rem;">
-                <div><span style="color:#8892a4">평단가</span><br><b>{int(p.get('buy_price',0)):,}원</b></div>
-                <div><span style="color:#8892a4">현재가</span><br><b style="color:{pnl_col}">{cur:,.0f}원</b></div>
-                <div><span style="color:#8892a4">평가손익</span><br><b style="color:{pnl_col}">{sign}{pnl:,.0f}원</b></div>
-                <div><span style="color:#8892a4">수량</span><br><b>{p['qty']}주</b></div>
-                <div><span style="color:#8892a4">목표가 (+20%)</span><br><b style="color:#00d4aa">{target:,.0f}원</b></div>
-                <div><span style="color:#8892a4">손절가 (-7%/MA20)</span><br><b style="color:#ff4b6e">{stoploss:,.0f}원</b></div>
-            </div>
-            {'<div style="margin-top:0.5rem; color:#ffd766; font-size:0.8rem;">📊 20일 신고가: ' + f'{high20:,.0f}원' + '</div>' if high20 else ''}
-        </div>
-        """, unsafe_allow_html=True)
-
-        col_d, col_e, col_s = st.columns([1, 1, 1])
-        with col_d:
-            if st.button(f"청산 처리", key=f"sell_{p['id']}"):
-                realized = (cur - p["buy_price"]) * p["qty"]
-                for item in portfolio:
-                    if item["id"] == p["id"]:
-                        item["status"]       = "청산"
-                        item["realized_pnl"] = realized
-                        item["sell_price"]   = cur
-                save_portfolio(username, portfolio)
-                st.success(f"{p['name']} 청산 완료 (실현손익: {realized:+,.0f}원)")
-                st.rerun()
-        with col_e:
-            if st.button(f"✏️ 수정", key=f"edit_{p['id']}"):
-                st.session_state[f"editing_{p['id']}"] = True
-        with col_s:
-            if st.button(f"삭제", key=f"del_{p['id']}"):
-                portfolio = [x for x in portfolio if x["id"] != p["id"]]
-                save_portfolio(username, portfolio)
-                st.rerun()
-
-        # 수정 폼
-        if st.session_state.get(f"editing_{p['id']}", False):
-            with st.container():
-                st.markdown("**✏️ 정보 수정**")
-                ec1, ec2, ec3 = st.columns(3)
-                with ec1:
-                    new_qty   = st.number_input("보유수량 (주)", value=int(p.get("qty",1)),
-                                                 key=f"eq_{p['id']}", min_value=1)
-                    new_date  = st.text_input("거래일", value=p.get("date",""), key=f"ed_{p['id']}")
-                with ec2:
-                    cur_total = int(p.get("total_amount", int(p.get("buy_price",0)) * int(p.get("qty",1))))
-                    new_total = st.number_input("총 매수금액 (원)", value=cur_total,
-                                                 key=f"ep_{p['id']}", step=10000, min_value=0)
-                with ec3:
-                    if new_qty > 0 and new_total > 0:
-                        new_avg = new_total / new_qty
-                        st.metric("자동 계산 평단가", f"{new_avg:,.0f}원")
-                    else:
-                        new_avg = 0
-                sc1, sc2 = st.columns(2)
-                with sc1:
-                    if st.button("💾 저장", key=f"esave_{p['id']}"):
+            rc1, rc2, rc3 = st.columns(3)
+            with rc1:
+                if st.button("🔄 ATR 재계산", key=f"recalc_{p['id']}"):
+                    new_atr = calc_atr_targets(p["ticker"], atr_stop, atr_tgt)
+                    if new_atr:
                         for item in portfolio:
-                            if item["id"] == p["id"]:
-                                item["qty"]          = new_qty
-                                item["total_amount"] = new_total
-                                item["buy_price"]    = round(new_avg, 2)
-                                item["date"]         = new_date
+                            if item["id"]==p["id"]:
+                                item["stoploss_atr"]  = int(new_atr["stoploss"])
+                                item["target_atr"]    = int(new_atr["target"])
+                                item["atr_val"]       = new_atr["atr"]
+                                item["atr_stop_mult"] = atr_stop
+                                item["atr_tgt_mult"]  = atr_tgt
                         save_portfolio(username, portfolio)
-                        st.session_state[f"editing_{p['id']}"] = False
-                        st.success("✅ 수정 완료!")
+                        st.success(f"재계산 완료: 손절 {new_atr['stoploss']:,.0f} / 익절 {new_atr['target']:,.0f}")
                         st.rerun()
-                with sc2:
-                    if st.button("❌ 취소", key=f"ecancel_{p['id']}"):
-                        st.session_state[f"editing_{p['id']}"] = False
-                        st.rerun()
+            with rc2:
+                if st.button("✅ 청산 처리", key=f"sell_{p['id']}"):
+                    realized = (cur - buy_price) * qty_n
+                    for item in portfolio:
+                        if item["id"]==p["id"]:
+                            item["status"]="청산"
+                            item["realized_pnl"]=realized
+                    save_portfolio(username, portfolio)
+                    st.success(f"청산 완료 (실현손익: {realized:+,.0f}원)")
+                    st.rerun()
+            with rc3:
+                if st.button("🗑️ 삭제", key=f"del_{p['id']}"):
+                    save_portfolio(username, [x for x in portfolio if x["id"]!=p["id"]])
+                    st.rerun()
 
-# ════════════════════════════════════════════════════════════
-#  [3] 퀀트 스캐너
-# ════════════════════════════════════════════════════════════
+    # ── 포트폴리오 요약 ───────────────────────────────────────
+    st.markdown("---")
+    unrealized = total_cur - total_cost
+    realized   = sum(float(p.get("realized_pnl",0)) for p in portfolio if p.get("status")=="청산")
+    total_pnl  = unrealized + realized
+    inv_pct    = total_pnl/total_cost*100 if total_cost else 0
+
+    s1,s2,s3,s4 = st.columns(4)
+    for col, label, val, color in [
+        (s1,"💼 투자액",    f"{total_cost:,.0f}원",    "#94a3b8"),
+        (s2,"📈 미실현손익", f"{unrealized:+,.0f}원",   "#38bdf8" if unrealized>=0 else "#f87171"),
+        (s3,"✅ 실현손익",  f"{realized:+,.0f}원",      "#34d399" if realized>=0 else "#f87171"),
+        (s4,"🎯 수익률",   f"{inv_pct:+.2f}%",         "#38bdf8" if inv_pct>=0 else "#f87171"),
+    ]:
+        col.markdown(
+            f'<div class="card" style="text-align:center;">'
+            f'<div class="label">{label}</div>'
+            f'<div style="color:{color};font-family:JetBrains Mono,monospace;'
+            f'font-size:1rem;font-weight:700;">{val}</div>'
+            f'</div>', unsafe_allow_html=True)
+
+
 def page_quant(username: str):
     st.markdown("## 🧮 퀀트 스캐너 2차 정밀")
     st.info("💡 장 마감 후 오후 3:30 이후 실행 권장. ThreadPoolExecutor 병렬처리로 빠르게 분석합니다.")
