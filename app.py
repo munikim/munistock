@@ -1178,13 +1178,18 @@ def page_portfolio(username: str):
 
 def page_quant(username: str):
     st.markdown("## 🧮 퀀트 스캐너 2차 정밀")
-    st.info("💡 장 마감 후 오후 3:30 이후 실행 권장. ThreadPoolExecutor 병렬처리로 빠르게 분석합니다.")
+    st.info("💡 **재무 건전성 + 수급** 동시 분석. 영업이익 적자·부채비율 200%↑ 종목 자동 제외. 장 마감 후 실행 권장.")
 
-    with st.expander("📐 A급 눌림목 기준", expanded=False):
+    with st.expander("📐 필터 기준", expanded=False):
         st.markdown("""
-        - **MA 근접**: 현재가가 MA20 또는 MA60의 ±3% 이내  
-        - **대량거래**: 최근 5일 내 평균 거래량 300% 이상 발생  
-        - **거래감소**: 오늘 거래량 < 스파이크일 거래량 (세력 보유 신호)
+        **종합 퀀트 점수 (100점)**
+        - 모멘텀(12개월 수익률): 30점
+        - 재무 건전성(ROE + 영업이익률): 40점
+        - 수급(기관보유 + 거래량): 30점
+
+        **자동 제외 조건**
+        - 영업이익 적자 기업
+        - 부채비율 200% 이상
         """)
 
     c1, c2, c3 = st.columns(3)
@@ -1192,112 +1197,169 @@ def page_quant(username: str):
     with c2: top_n   = st.slider("분석 상위 종목", 10, 60, 30)
     with c3: workers = st.slider("병렬 스레드", 5, 20, 10)
 
-    if st.button("⚡ 병렬 스캔 시작", type="primary", key="quant_scan_btn"):
-        import FinanceDataReader as fdr  # noqa
+    if st.button("⚡ 퀀트 스캔 시작", type="primary", key="quant_scan_btn"):
+        import FinanceDataReader as fdr, yfinance as yf
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        prog_bar = st.progress(0, text="종목 목록 수집 중...")
-
-        # 종목 목록 수집 — 캐시된 함수 사용 (KRX 직접 접근 방지)
+        prog = st.progress(0, text="종목 목록 수집 중...")
         markets = ["KOSPI","KOSDAQ"] if market=="전체" else [market]
         tickers = []
         for mkt in markets:
-            t = get_market_tickers(mkt)
-            tickers.extend(t)
+            tickers.extend(get_market_tickers(mkt))
+
         if not tickers:
             st.error("❌ 종목 목록을 가져올 수 없습니다.")
-            st.info("💡 캐시 초기화 후 재시도: 브라우저 새로고침 → 다시 스캔")
             return
-        st.caption(f"📋 {len(tickers)}개 종목 로드 완료 (FDR/pykrx/내장 리스트 중 하나)")
 
         total = len(tickers)
-        prog_bar.progress(5, text=f"{total}개 종목 분석 시작...")
+        suffix_map = {"KOSPI":".KS","KOSDAQ":".KQ"}
 
-        # ★ 순수 계산 함수 — Streamlit API 절대 호출 없음
         def _analyze(t):
+            """순수 계산 — Streamlit API 호출 없음"""
             try:
-                end   = datetime.now().strftime("%Y%m%d")
-                start = (datetime.now()-timedelta(days=400)).strftime("%Y%m%d")
+                yf_t = t.get("yf_ticker", t["ticker"]+suffix_map.get(t["market"],".KS"))
+                tk   = yf.Ticker(yf_t)
+                info = {}
+                try: info = tk.info or {}
+                except Exception: pass
 
-                # Yahoo Finance(.KS/.KQ) 우선, 실패 시 FDR 폴백
+                # ── 재무 필터 ─────────────────────────────────
+                # 영업이익 적자 제외
+                op_income = info.get("operatingCashflow") or info.get("ebitda") or 0
+                if op_income < 0:
+                    return None
+
+                # 부채비율 200% 이상 제외
+                debt_equity = float(info.get("debtToEquity", 0) or 0)
+                if debt_equity > 200:
+                    return None
+
+                # ── 재무 지표 ─────────────────────────────────
+                roe      = float(info.get("returnOnEquity", 0) or 0) * 100
+                op_marg  = float(info.get("operatingMargins", 0) or 0) * 100
+                if roe < 0 or op_marg < 0:
+                    return None  # 수익성 없는 기업 제외
+
+                # ── 가격 모멘텀 ───────────────────────────────
+                end   = datetime.now().strftime("%Y%m%d")
+                start = (datetime.now()-timedelta(days=380)).strftime("%Y%m%d")
                 df = None
-                yf_ticker = t.get("yf_ticker", t["ticker"])
                 try:
-                    import yfinance as yf
-                    yf_df = yf.download(yf_ticker, start=start[:4]+"-"+start[4:6]+"-"+start[6:],
-                                        end=end[:4]+"-"+end[4:6]+"-"+end[6:],
-                                        progress=False, auto_adjust=True)
-                    if yf_df is not None and len(yf_df) >= 65:
-                        yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
-                                         for c in yf_df.columns]
+                    s_yf = start[:4]+"-"+start[4:6]+"-"+start[6:]
+                    e_yf = end[:4]+"-"+end[4:6]+"-"+end[6:]
+                    yf_df = yf.download(yf_t, start=s_yf, end=e_yf,
+                                        progress=False, auto_adjust=True, timeout=8)
+                    if yf_df is not None and len(yf_df) >= 60:
+                        yf_df.columns = [c.lower() if isinstance(c,str)
+                                         else c[0].lower() for c in yf_df.columns]
                         df = yf_df
                 except Exception:
                     pass
+                if df is None:
+                    try: df = fdr.DataReader(t["ticker"], start, end)
+                    except Exception: pass
+                if df is None or len(df) < 60:
+                    return None
 
-                if df is None or len(df) < 65:
-                    df = fdr.DataReader(t["ticker"], start, end)
-                if df is None or len(df) < 65: return None
                 for c in df.columns:
                     cl = c.strip().lower()
                     if cl in ("close","adj close"): df = df.rename(columns={c:"close"})
                     elif cl == "volume":            df = df.rename(columns={c:"volume"})
-                df["close"]  = pd.to_numeric(df["close"],  errors="coerce")
-                df["volume"] = pd.to_numeric(df.get("volume", pd.Series([0]*len(df))), errors="coerce")
+                df["close"] = pd.to_numeric(df["close"], errors="coerce")
                 df = df.dropna(subset=["close"])
-                if len(df) < 65: return None
+                if len(df) < 60: return None
 
-                close = df["close"]; vol = df["volume"]
-                cur   = float(close.iloc[-1])
-                mom   = (close.iloc[-1]/close.iloc[0]-1)*100
-                v20   = close.pct_change().rolling(20).std().iloc[-1]*100
-                score = mom*0.6 - v20*0.2
-                ma20  = close.rolling(20).mean().iloc[-1]
-                ma60  = close.rolling(60).mean().iloc[-1] if len(close)>=60 else ma20
-                nm20  = abs(cur-ma20)/ma20<=0.03 if ma20 else False
-                nm60  = abs(cur-ma60)/ma60<=0.03 if ma60 else False
-                near  = nm20 or nm60
-                va    = vol.rolling(20).mean().iloc[-6] if len(vol)>=21 else vol.mean()
-                r5    = vol.iloc[-6:-1]
-                spk   = bool((r5>=va*3.0).any()) if va and va>0 else False
-                tdv   = float(vol.iloc[-1]) if len(vol)>0 else 0
-                dec   = tdv < float(r5.max()) if spk else False
+                momentum = (df["close"].iloc[-1]/df["close"].iloc[0]-1)*100
+                vol_20   = df["close"].pct_change().rolling(20).std().iloc[-1]*100
+                cur_p    = float(df["close"].iloc[-1])
+
+                # ── 수급 지표 ─────────────────────────────────
+                inst_pct    = float(info.get("heldPercentInstitutions",0) or 0)*100
+                insider_pct = float(info.get("heldPercentInsiders",0) or 0)*100
+                foreign_est = max(0, 100-inst_pct-insider_pct)
+
+                hist_days = min(20, len(df))
+                avg_vol   = float(df["volume"].iloc[-hist_days*2:-hist_days].mean()) if len(df)>hist_days*2 else float(df["volume"].mean())
+                rec_vol   = float(df["volume"].iloc[-hist_days:].mean())
+                vol_ratio = round(rec_vol/avg_vol, 2) if avg_vol>0 else 1.0
+
+                # ── 종합 퀀트 점수 ────────────────────────────
+                # 모멘텀 점수 (30점)
+                mom_score = min(30, max(0, momentum*0.5))
+                # 재무 점수 (40점): ROE 20점 + 영업이익률 20점
+                roe_score = min(20, max(0, roe*0.8))
+                opm_score = min(20, max(0, op_marg*1.0))
+                fin_score = roe_score + opm_score
+                # 수급 점수 (30점)
+                inst_s  = min(15, inst_pct*0.75)
+                for_s   = min(10, foreign_est*0.4)
+                vol_s   = min(5, (vol_ratio-1)*5) if vol_ratio>1 else 0
+                sup_score = inst_s + for_s + vol_s
+
+                total_score = round(mom_score+fin_score+sup_score, 1)
+
+                # A급 눌림목 2차 필터
+                if len(df) >= 60:
+                    ma20 = df["close"].rolling(20).mean().iloc[-1]
+                    ma60 = df["close"].rolling(60).mean().iloc[-1]
+                    near_ma = (abs(cur_p-ma20)/ma20<=0.05 if ma20 else False) or                               (abs(cur_p-ma60)/ma60<=0.05 if ma60 else False)
+                    r5  = df["volume"].iloc[-6:-1]
+                    va  = df["volume"].rolling(20).mean().iloc[-6] if len(df)>=21 else df["volume"].mean()
+                    spk = bool((r5>=va*3.0).any()) if va and va>0 else False
+                    tdv = float(df["volume"].iloc[-1]) if len(df)>0 else 0
+                    dec = tdv < float(r5.max()) if spk else False
+                    is_a = near_ma and spk and dec
+                else:
+                    is_a = False
+
                 return {
-                    "is_a_grade": near and spk and dec,
-                    "종목코드": t["ticker"], "종목명": t["name"], "시장": t["market"],
-                    "현재가": int(cur), "12개월수익률(%)": round(mom,2),
-                    "변동성(%)": round(v20,2), "퀀트점수": round(score,2),
-                    "MA20이격(%)": round((cur-ma20)/ma20*100,2) if ma20 else 0,
-                    "MA60이격(%)": round((cur-ma60)/ma60*100,2) if ma60 else 0,
-                    "MA근접": "✅" if near else "❌",
-                    "대량거래": "✅" if spk else "❌",
-                    "거래감소": "✅" if dec else "❌",
+                    "is_a_grade":    is_a,
+                    "종목코드":      t["ticker"],
+                    "종목명":        t["name"],
+                    "시장":          t["market"],
+                    "현재가":        int(cur_p),
+                    "종합퀀트점수":  total_score,
+                    "모멘텀점수":    round(mom_score,1),
+                    "재무점수":      round(fin_score,1),
+                    "수급점수":      round(sup_score,1),
+                    "12개월수익률(%)": round(momentum,2),
+                    "변동성(%)":     round(vol_20,2),
+                    "ROE(%)":        round(roe,1),
+                    "영업이익률(%)": round(op_marg,1),
+                    "부채비율":      round(debt_equity,1),
+                    "기관보유(%)":   round(inst_pct,1),
+                    "외국인추정(%)": round(foreign_est,1),
+                    "거래량비율":    vol_ratio,
                 }
             except Exception:
                 return None
 
-        # 병렬 실행 — as_completed 순서로 메인 스레드에서만 progress 업데이트
         results = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = list(ex.map(_analyze, tickers))  # map은 순서 보장, UI 안 건드림
+            futs = list(ex.map(_analyze, tickers))
         results = [r for r in futs if r]
-
-        prog_bar.progress(100, text=f"완료! {len(results)}개 발굴")
+        prog.progress(100, text=f"✅ {len(results)}개 발굴 완료!")
 
         if results:
             df_all = (pd.DataFrame(results)
-                      .sort_values(["is_a_grade","퀀트점수"], ascending=[False,False])
+                      .sort_values(["is_a_grade","종합퀀트점수"], ascending=[False,False])
                       .head(top_n).reset_index(drop=True))
             df_all.index += 1
             st.session_state["quant_records"] = df_all.to_dict("records")
             st.session_state["quant_results"] = df_all[["종목코드","종목명"]].to_dict("records")
             a_cnt = int(df_all["is_a_grade"].sum())
-            st.success(f"✅ {len(df_all)}개 | 🔥 A급 눌림목: {a_cnt}개")
+            st.success(f"✅ {len(df_all)}개 | 🔥A급 눌림목: {a_cnt}개 | 재무적자/고부채 자동제외")
         else:
-            st.info("📭 조건에 맞는 종목이 없습니다.")
+            st.info("📭 조건 부합 종목 없음")
 
-    # ── 결과 렌더링 (스캔 버튼 바깥) ──────────────────────────
+    # ── 결과 렌더링 ──────────────────────────────────────────
     records = st.session_state.get("quant_records", [])
     if not records:
+        st.markdown(
+            '<div class="card" style="text-align:center;padding:2rem;">'
+            '<div style="font-size:2rem;">🧮</div>'
+            '<div style="color:#94a3b8;margin-top:0.5rem;">스캔 버튼을 눌러 우량주를 발굴하세요</div>'
+            '</div>', unsafe_allow_html=True)
         return
 
     df_show = pd.DataFrame(records)
@@ -1307,27 +1369,30 @@ def page_quant(username: str):
     if a_recs:
         st.markdown(f"### 🔥 A급 눌림목 <span style='color:#fbbf24;font-size:0.85rem;'>({len(a_recs)}개)</span>", unsafe_allow_html=True)
         for r in a_recs:
-            ss = "+" if r["12개월수익률(%)"]>=0 else ""
-            mc = "#38bdf8" if abs(r["MA20이격(%)"])<=3 else "#94a3b8"
+            sc   = r["종합퀀트점수"]
+            sc_c = "#34d399" if sc>=70 else "#fbbf24"
             st.markdown(
                 f'<div class="card card-warn">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                f'<div><b style="font-size:0.97rem;">🔥 {r["종목명"]}</b>'
+                f'<div><b>🔥 {r["종목명"]}</b>'
                 f'<span style="color:#94a3b8;font-size:0.72rem;margin-left:0.4rem;">{r["종목코드"]} | {r["시장"]}</span></div>'
-                f'<b class="mono gold-color">점수 {r["퀀트점수"]:.1f}</b></div>'
-                f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.3rem;margin-top:0.4rem;font-size:0.75rem;">'
+                f'<b style="color:{sc_c};font-family:JetBrains Mono,monospace;">종합 {sc:.0f}점</b></div>'
+                f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.3rem;margin-top:0.5rem;font-size:0.75rem;">'
+                f'<div><div class="label">모멘텀</div><b style="color:#38bdf8">{r["모멘텀점수"]:.0f}pt</b></div>'
+                f'<div><div class="label">재무</div><b style="color:#34d399">{r["재무점수"]:.0f}pt</b></div>'
+                f'<div><div class="label">수급</div><b style="color:#a78bfa">{r["수급점수"]:.0f}pt</b></div>'
+                f'<div><div class="label">ROE</div><b>{r["ROE(%)"]}%</b></div>'
+                f'<div><div class="label">영업이익률</div><b>{r["영업이익률(%)"]}%</b></div>'
+                f'<div><div class="label">부채비율</div><b style="color:#94a3b8">{r["부채비율"]}%</b></div>'
+                f'<div><div class="label">기관보유</div><b style="color:#a78bfa">{r["기관보유(%)"]}%</b></div>'
                 f'<div><div class="label">현재가</div><b class="mono">{r["현재가"]:,}원</b></div>'
-                f'<div><div class="label">12개월수익</div><b class="profit-color">{ss}{r["12개월수익률(%)"]}%</b></div>'
-                f'<div><div class="label">MA20이격</div><b style="color:{mc}">{r["MA20이격(%)"]:+.1f}%</b></div>'
-                f'<div><div class="label">MA근접</div><b>{r["MA근접"]}</b></div>'
-                f'<div><div class="label">대량거래</div><b>{r["대량거래"]}</b></div>'
-                f'<div><div class="label">거래감소</div><b>{r["거래감소"]}</b></div>'
                 f'</div></div>', unsafe_allow_html=True)
 
     if n_recs:
         st.markdown(f"### 📊 일반 종목 <span style='color:#94a3b8;font-size:0.85rem;'>({len(n_recs)}개)</span>", unsafe_allow_html=True)
 
-    disp  = ["종목명","종목코드","시장","현재가","퀀트점수","12개월수익률(%)","MA근접","대량거래","거래감소"]
+    # data_editor
+    disp  = ["종목명","종목코드","시장","현재가","종합퀀트점수","모멘텀점수","재무점수","수급점수","ROE(%)","영업이익률(%)","부채비율","기관보유(%)","거래량비율"]
     df_ed = df_show[[c for c in disp if c in df_show.columns]].copy()
     df_ed.insert(0, "선택", False)
     df_ed.insert(0, "등급", df_show["is_a_grade"].map({True:"🔥",False:"—"}))
@@ -1356,44 +1421,29 @@ def page_quant(username: str):
 
 
 def page_swing(username: str):
-    st.markdown("## 📈 스윙 매매 스캐너")
-    st.info("💡 **최적 실행 시간**: 장 마감 후 오후 3:30 이후 권장. 기술적 지표 + 수급 분석 통합 스캐너.")
+    """스윙 매매 — 기술적 지표·차트 패턴·ATR 타이밍 전용"""
+    st.markdown("## 📈 스윙 매매")
+    st.info("💡 기술적 지표 기반 단기 매수 타점. ATR 손절/20일고가 익절 적용. 장 마감 후 실행 권장.")
 
-    # ── 스캔 조건 설정 ────────────────────────────────────────
-    with st.expander("⚙️ 기술적 스캔 조건", expanded=True):
+    with st.expander("⚙️ 스캔 조건", expanded=True):
         col1, col2, col3 = st.columns(3)
         with col1:
-            min_chg  = st.number_input("최소 상승률 (%)", value=2.0, step=0.5) / 100
-            max_chg  = st.number_input("최대 상승률 (%)", value=30.0, step=1.0) / 100
+            min_chg  = st.number_input("최소 상승률(%)", value=2.0, step=0.5, key="sw_minc") / 100
+            max_chg  = st.number_input("최대 상승률(%)", value=30.0, step=1.0, key="sw_maxc") / 100
         with col2:
-            min_val  = st.number_input("최소 거래대금 (억)", value=50, step=10,
-                                        help="낮출수록 중소형주 포함") * 1e8
-            rsi_min  = st.number_input("RSI 하한", value=45, step=5)
+            min_val  = st.number_input("최소 거래대금(억)", value=50, step=10, key="sw_val") * 1e8
+            rsi_min  = st.number_input("RSI 하한", value=45, step=5, key="sw_rmin")
         with col3:
-            rsi_max  = st.number_input("RSI 상한", value=80, step=5)
-            market_s = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"])
+            rsi_max  = st.number_input("RSI 상한", value=80, step=5, key="sw_rmax")
+            market_s = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="sw_mkt")
 
-    # ── 수급 필터 옵션 (사이드바) ────────────────────────────
-    with st.sidebar:
-        st.markdown("### 📡 수급 필터")
-        use_supply   = st.checkbox("수급 조건 포함", value=False,
-                                   help="체크 시 외인+기관 동반 매수 종목만 표시")
-        supply_days  = st.slider("수급 집계 기간(거래일)", 3, 10, 5,
-                                  disabled=not use_supply)
-        min_inst_pct = st.slider("최소 기관보유(%)", 0, 30, 10,
-                                  disabled=not use_supply)
-        min_vol_ratio= st.slider("최소 거래량비율(배)", 1.0, 3.0, 1.2, step=0.1,
-                                  disabled=not use_supply)
-
-    st.caption(f"🔍 이격도 115% 초과 과열 종목 제외 | ATR 기반 개별 손절/익절 | "
-               f"{'📡 수급 필터 ON' if use_supply else '📡 수급 필터 OFF'}")
+    atr_s = st.sidebar.number_input("손절 ATR배수", value=2.0, step=0.5, key="sw_atrs",
+                                     help="손절 = 현재가 - ATR × 배수")
 
     if st.button("🔍 스윙 스캔 시작", type="primary", key="swing_scan_btn"):
-        import FinanceDataReader as fdr
-        import ta, yfinance as yf
+        import FinanceDataReader as fdr, yfinance as yf, ta
 
         progress = st.progress(0, text="종목 수집 중...")
-
         markets = ["KOSPI","KOSDAQ"] if market_s=="전체" else [market_s]
         tickers_all = []
         for mkt in markets:
@@ -1403,190 +1453,131 @@ def page_swing(username: str):
             st.error("❌ 종목 목록을 가져올 수 없습니다.")
             return
 
-        total   = len(tickers_all)
-        results = []
         suffix_map = {"KOSPI":".KS","KOSDAQ":".KQ"}
+        total, results = len(tickers_all), []
         end   = datetime.now().strftime("%Y%m%d")
         start = (datetime.now()-timedelta(days=250)).strftime("%Y%m%d")
+        s_yf  = start[:4]+"-"+start[4:6]+"-"+start[6:]
+        e_yf  = end[:4]+"-"+end[4:6]+"-"+end[6:]
 
         for i, t in enumerate(tickers_all):
             if i % 5 == 0:
-                pct = int(5 + i/total*88)
-                progress.progress(pct,
-                    text=f"분석 {i+1}/{total} | 발굴: {len(results)}개")
+                progress.progress(int(5+i/total*88),
+                    text=f"스캔 {i+1}/{total} | 발굴: {len(results)}개")
             try:
-                yf_t = t.get("yf_ticker",
-                              t["ticker"] + suffix_map.get(t["market"],".KS"))
-
-                # ── 가격 데이터 (Yahoo 우선, FDR 폴백) ────────
-                df = None
+                yf_t = t.get("yf_ticker", t["ticker"]+suffix_map.get(t["market"],".KS"))
+                df   = None
                 try:
-                    s_yf = start[:4]+"-"+start[4:6]+"-"+start[6:]
-                    e_yf = end[:4]+"-"+end[4:6]+"-"+end[6:]
                     yf_df = yf.download(yf_t, start=s_yf, end=e_yf,
                                         progress=False, auto_adjust=True, timeout=8)
                     if yf_df is not None and len(yf_df) >= 120:
                         yf_df.columns = [c.lower() if isinstance(c,str)
                                          else c[0].lower() for c in yf_df.columns]
                         df = yf_df
-                except Exception:
-                    pass
+                except Exception: pass
                 if df is None:
-                    df = fdr.DataReader(t["ticker"], start, end)
-                if df is None or len(df) < 120:
-                    continue
+                    try: df = fdr.DataReader(t["ticker"], start, end)
+                    except Exception: pass
+                if df is None or len(df) < 120: continue
 
-                # ── 컬럼 정규화 ───────────────────────────────
-                col_map = {}
+                cm = {}
                 for c in df.columns:
                     cl = c.strip().lower()
-                    if cl=="open":   col_map[c]="open"
-                    elif cl=="high": col_map[c]="high"
-                    elif cl=="low":  col_map[c]="low"
-                    elif cl in("close","adj close"): col_map[c]="close"
-                    elif cl=="volume": col_map[c]="volume"
-                df = df.rename(columns=col_map)
+                    if cl=="open": cm[c]="open"
+                    elif cl=="high": cm[c]="high"
+                    elif cl=="low": cm[c]="low"
+                    elif cl in("close","adj close"): cm[c]="close"
+                    elif cl=="volume": cm[c]="volume"
+                df = df.rename(columns=cm)
                 for col in ["open","high","low","close","volume"]:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors="coerce")
                 df = df.dropna(subset=["open","high","low","close","volume"])
-                if len(df) < 120:
-                    continue
+                if len(df) < 120: continue
 
-                # ── 기술 지표 ─────────────────────────────────
-                df["trade_value"] = df["close"] * df["volume"]
-                df["ma5"]   = df["close"].rolling(5).mean()
-                df["ma20"]  = df["close"].rolling(20).mean()
-                df["ma60"]  = df["close"].rolling(60).mean()
-                df["ma120"] = df["close"].rolling(120).mean()
-                std          = df["close"].rolling(20).std()
-                df["bb_upper"] = df["ma20"] + 2*std
-                df["rsi"]   = ta.momentum.RSIIndicator(df["close"],window=14).rsi()
+                df["trade_value"] = df["close"]*df["volume"]
+                df["ma5"]    = df["close"].rolling(5).mean()
+                df["ma20"]   = df["close"].rolling(20).mean()
+                df["ma60"]   = df["close"].rolling(60).mean()
+                df["ma120"]  = df["close"].rolling(120).mean()
+                std           = df["close"].rolling(20).std()
+                df["bb_upper"] = df["ma20"]+2*std
+                df["rsi"]    = ta.momentum.RSIIndicator(df["close"],window=14).rsi()
                 df["prev_close"]  = df["close"].shift(1)
                 df["prev_volume"] = df["volume"].shift(1)
-
-                # ATR
-                atr_ind = ta.volatility.AverageTrueRange(
-                    df["high"], df["low"], df["close"], window=14)
+                atr_ind = ta.volatility.AverageTrueRange(df["high"],df["low"],df["close"],window=14)
                 df["atr"] = atr_ind.average_true_range()
 
                 row = df.iloc[-1]
                 pc  = row["prev_close"]
-                if pd.isna(pc) or pc == 0: continue
-                chg = (row["close"] - pc) / pc
-
-                # ── 기술적 필터 ───────────────────────────────
-                if not (min_chg <= chg <= max_chg):      continue
-                if row["trade_value"] < min_val:          continue
+                if pd.isna(pc) or pc==0: continue
+                chg = (row["close"]-pc)/pc
+                if not(min_chg<=chg<=max_chg): continue
+                if row["trade_value"]<min_val: continue
                 pv = row["prev_volume"]
-                if pd.isna(pv) or pv==0 or row["volume"] < pv*0.7: continue
-                if row["close"] - row["open"] <= 0 and chg < min_chg: continue
+                if pd.isna(pv) or pv==0 or row["volume"]<pv*0.7: continue
+                if row["close"]-row["open"]<=0 and chg<min_chg: continue
                 if any(pd.isna([row["ma5"],row["ma20"],row["ma60"],row["ma120"]])): continue
-                if not (row["close"] > row["ma5"] > row["ma20"]): continue
-                if row["close"] <= row["ma120"]:          continue
-                if pd.isna(row["bb_upper"]) or row["close"] <= row["bb_upper"]: continue
-                if pd.isna(row["rsi"]) or not (rsi_min <= row["rsi"] <= rsi_max): continue
-                disp = row["close"] / row["ma20"]
-                if disp > 1.15 or disp < 0.90:           continue
+                if not(row["close"]>row["ma5"]>row["ma20"]): continue
+                if row["close"]<=row["ma120"]: continue
+                if pd.isna(row["bb_upper"]) or row["close"]<=row["bb_upper"]: continue
+                if pd.isna(row["rsi"]) or not(rsi_min<=row["rsi"]<=rsi_max): continue
+                disp = row["close"]/row["ma20"]
+                if disp>1.15 or disp<0.90: continue
 
-                # ── ATR 기반 손절/익절 ────────────────────────
-                atr_val  = float(row["atr"]) if not pd.isna(row["atr"]) else row["close"]*0.03
                 cur_p    = float(row["close"])
-                stoploss = cur_p - atr_val * 2.0
-                high20   = float(df["high"].iloc[-20:].max())
-                target   = high20 if high20 > cur_p else cur_p * 1.12
-                ma5f     = float(df["ma5"].iloc[-2]) if not pd.isna(df["ma5"].iloc[-2]) else float(row["ma5"])
-                entry    = ma5f * 0.975
-                rr       = (target-entry)/(entry-stoploss) if entry > stoploss else 0
-                if rr < 1.0: continue
-
-                # ── 수급 데이터 (Yahoo Finance 기관보유 지표) ─
-                inst_pct   = 0.0
-                vol_ratio  = 0.0
-                supply_tag = ""
-                try:
-                    tk         = yf.Ticker(yf_t)
-                    info       = tk.info or {}
-                    inst_pct   = float(info.get("heldPercentInstitutions",0) or 0)*100
-                    # 최근 거래량 vs 평균
-                    recent_vol = float(df["volume"].iloc[-supply_days:].mean())
-                    avg_vol    = float(df["volume"].iloc[-30:-supply_days].mean())
-                    vol_ratio  = round(recent_vol/avg_vol, 2) if avg_vol > 0 else 1.0
-                    # 쌍끌이 태그
-                    if inst_pct >= 20 and vol_ratio >= 1.5:
-                        supply_tag = "🔥쌍끌이"
-                    elif inst_pct >= 15 and vol_ratio >= 1.2:
-                        supply_tag = "📈수급양호"
-                    elif vol_ratio >= 1.5:
-                        supply_tag = "💧거래급증"
-                except Exception:
-                    pass
-
-                # ── 수급 필터 적용 ────────────────────────────
-                if use_supply and supply_tag not in ["🔥쌍끌이","📈수급양호"]:
-                    continue
+                atr_val  = float(row["atr"]) if not pd.isna(row["atr"]) else cur_p*0.03
+                high20   = float(df["high"].iloc[-20:].max()) if "high" in df.columns else cur_p*1.10
+                target   = high20 if high20>cur_p else cur_p*1.10
+                ma5f     = float(df["ma5"].iloc[-2]) if len(df)>1 and not pd.isna(df["ma5"].iloc[-2]) else float(row["ma5"])
+                entry    = ma5f*0.975
+                stoploss = cur_p - atr_val*atr_s
+                rr       = (target-entry)/(entry-stoploss) if entry>stoploss else 0
+                if rr<1.0: continue
 
                 results.append({
-                    "종목명":       t["name"],
-                    "종목코드":     t["ticker"],
-                    "시장":         t["market"],
-                    "현재가":       int(cur_p),
-                    "등락률(%)":    round(chg*100, 2),
-                    "거래대금(억)": round(row["trade_value"]/1e8, 1),
-                    "RSI":          round(float(row["rsi"]), 1),
-                    "이격도(%)":    round(disp*100, 2),
-                    "ATR":          round(atr_val, 0),
-                    "ATR(%)":       round(atr_val/cur_p*100, 2),
-                    "손익비":       round(rr, 2),
-                    "매수타점":     int(entry),
-                    "목표가":       int(target),
-                    "손절가":       int(stoploss),
-                    "기관보유(%)":  round(inst_pct, 1),
-                    "거래량비율":   vol_ratio,
-                    "수급태그":     supply_tag,
+                    "종목명":       t["name"], "종목코드": t["ticker"], "시장": t["market"],
+                    "현재가":       int(cur_p), "등락률(%)": round(chg*100,2),
+                    "거래대금(억)": round(row["trade_value"]/1e8,1),
+                    "RSI":          round(float(row["rsi"]),1),
+                    "이격도(%)":    round(disp*100,2),
+                    "ATR(%)":       round(atr_val/cur_p*100,2),
+                    "손익비":       round(rr,2),
+                    "매수타점":     int(entry), "목표가": int(target), "손절가(ATR)": int(stoploss),
                 })
-            except Exception:
-                continue
+            except Exception: continue
 
-        progress.progress(100, text="✅ 완료!")
-
+        progress.progress(100, text="✅ 스캔 완료!")
         if results:
-            df_out = (pd.DataFrame(results)
-                      .sort_values(["수급태그","손익비"],
-                                   ascending=[False, False],
-                                   key=lambda x: x if x.name!="수급태그"
-                                       else x.map({"🔥쌍끌이":3,"📈수급양호":2,
-                                                   "💧거래급증":1,"":0}))
-                      .reset_index(drop=True))
+            df_out = pd.DataFrame(results).sort_values("손익비",ascending=False).reset_index(drop=True)
             df_out.index += 1
             st.session_state["swing_records"]      = df_out.to_dict("records")
             st.session_state["swing_results"]      = df_out[["종목코드","종목명"]].to_dict("records")
             st.session_state["swing_results_full"] = df_out.to_dict("records")
-            _tmp = user_file(username, "swing_temp.json")
-            with open(_tmp, "w", encoding="utf-8") as _f:
-                json.dump(df_out.to_dict("records"), _f, ensure_ascii=False, indent=2)
-            double_cnt = sum(1 for r in df_out.to_dict("records") if r["수급태그"]=="🔥쌍끌이")
-            st.success(f"✅ {len(df_out)}개 발굴 | 🔥쌍끌이: {double_cnt}개 | ATR 손절 적용")
+            st.success(f"✅ {len(df_out)}개 발굴! ATR 손절 적용")
         else:
-            st.info("📭 조건에 맞는 종목이 없습니다. 조건을 완화해 보세요.")
+            st.info("📭 조건에 맞는 종목 없음. 조건을 완화해 보세요.")
 
-    # ── 결과 렌더링 ─────────────────────────────────────────
+    # ── 결과 렌더링 ──────────────────────────────────────────
     records = st.session_state.get("swing_records", [])
     if not records:
+        st.markdown(
+            '<div class="card" style="text-align:center;padding:2rem;">'
+            '<div style="font-size:2rem;">📈</div>'
+            '<div style="color:#94a3b8;margin-top:0.5rem;">스캔 버튼을 눌러 매수 타점을 찾아보세요</div>'
+            '</div>', unsafe_allow_html=True)
         return
 
-    df_show = pd.DataFrame(records)
-    n = len(records)
-    st.markdown(f"### 📊 발굴 종목 {n}개")
-    st.caption("💡 ATR 변동성 손절 | 20일 최고가 저항선 익절 | 🔥쌍끌이=외인+기관 동반매수")
+    df_out = pd.DataFrame(records)
+    st.markdown(f"### 📊 발굴 종목 {len(records)}개")
+    st.caption("손익비 내림차순 | ATR 변동성 손절 | 20일 최고가 저항선 익절")
 
-    # 전체 등록
-    fa, fb = st.columns([3,1])
+    fa,fb = st.columns([3,1])
     with fa:
         st.markdown(
             f'<div style="background:linear-gradient(90deg,#f8717122,#fbbf2411);'
             f'border:1px solid #fbbf24;border-radius:10px;padding:0.5rem 1rem;'
-            f'font-size:0.85rem;color:#fbbf24;">⚡ 전체 <b>{n}개</b> 관심종목에 저장</div>',
+            f'font-size:0.85rem;color:#fbbf24;">⚡ 전체 <b>{len(records)}개</b> 관심종목 등록</div>',
             unsafe_allow_html=True)
     with fb:
         if st.button("🔥 전체 추가", key="swing_all_add", type="primary"):
@@ -1595,376 +1586,378 @@ def page_swing(username: str):
                 rv = add_to_watchlist(username=username, ticker=r["종목코드"],
                     name=r["종목명"], source="스윙",
                     entry=int(r["매수타점"]), target=int(r["목표가"]),
-                    stoploss=int(r["손절가"]), rsi=float(r.get("RSI",0)),
-                    rr_ratio=float(r.get("손익비",0)), market=r.get("시장",""),
-                    scan_date=today, base_price=float(r["현재가"]))
+                    stoploss=int(r["손절가(ATR)"]),
+                    rsi=float(r.get("RSI",0)), rr_ratio=float(r.get("손익비",0)),
+                    market=r.get("시장",""), scan_date=datetime.now().strftime("%Y-%m-%d"),
+                    base_price=float(r["현재가"]))
                 if rv in ("added","updated"): added += 1
             st.success(f"✅ {added}개 추가!")
-            if added > 0: st.balloons()
+            if added>0: st.balloons()
 
     st.markdown("---")
-
-    # ── 4열 카드 ─────────────────────────────────────────────
-    tag_colors = {
-        "🔥쌍끌이":  "#f87171",
-        "📈수급양호": "#34d399",
-        "💧거래급증": "#38bdf8",
-        "":           "#2d3748",
-    }
     for row_i in range(0, len(records), 4):
-        row_recs = records[row_i: row_i+4]
         cols = st.columns(4)
-        for col, r in zip(cols, row_recs):
-            pnl_col  = "#34d399" if r["등락률(%)"] > 0 else "#f87171"
-            pnl_sgn  = "+" if r["등락률(%)"] > 0 else ""
-            rr_col   = "#34d399" if r["손익비"]>=2 else ("#fbbf24" if r["손익비"]>=1.5 else "#94a3b8")
-            tag      = r.get("수급태그","")
-            tag_col  = tag_colors.get(tag,"#2d3748")
-            inst_pct = r.get("기관보유(%)",0)
-            vr       = r.get("거래량비율",1.0)
-            vr_col   = "#34d399" if vr>=1.5 else ("#fbbf24" if vr>=1.2 else "#94a3b8")
-            border_top = tag_col if tag else "#2d3748"
-
+        for col, r in zip(cols, records[row_i:row_i+4]):
+            pc  = "#34d399" if r["등락률(%)"]>0 else "#f87171"
+            ps  = "+" if r["등락률(%)"]>0 else ""
+            rrc = "#34d399" if r["손익비"]>=2 else("#fbbf24" if r["손익비"]>=1.5 else"#94a3b8")
             col.markdown(
-                f'<div class="card" style="border-top:3px solid {border_top};">'
-
-                # 헤더
-                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
-                f'<div style="flex:1;min-width:0;">'
-                f'<div style="font-size:0.85rem;font-weight:700;'
-                f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
-                f'{r["종목명"]}</div>'
-                f'<div style="color:#94a3b8;font-size:0.65rem;">'
-                f'{r["종목코드"]} | {r["시장"]}</div>'
-                f'</div>'
-                f'{"<div style=\"font-size:0.7rem;font-weight:700;color:"+tag_col+";white-space:nowrap;margin-left:0.3rem;\">"+tag+"</div>" if tag else ""}'
-                f'</div>'
-
-                # 현재가 + 등락
-                f'<div style="margin-top:0.4rem;">'
-                f'<span style="color:{pnl_col};font-family:JetBrains Mono,monospace;'
-                f'font-size:0.95rem;font-weight:700;">{r["현재가"]:,}</span>'
-                f'<span style="color:{pnl_col};font-size:0.7rem;margin-left:0.3rem;">'
-                f'{pnl_sgn}{r["등락률(%)"]}%</span>'
-                f'</div>'
-
-                # 구분선
-                f'<div style="border-top:1px solid #2d3748;margin:0.35rem 0;"></div>'
-
-                # 타점/목표/손절
-                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem;font-size:0.7rem;">'
-                f'<div><div class="label">💰 타점</div>'
-                f'<b style="color:#fbbf24;font-family:JetBrains Mono,monospace;font-size:0.78rem;">'
-                f'{r["매수타점"]:,}</b></div>'
-                f'<div><div class="label">🎯 목표</div>'
-                f'<b style="color:#34d399;font-family:JetBrains Mono,monospace;font-size:0.78rem;">'
-                f'{r["목표가"]:,}</b></div>'
-                f'<div><div class="label">🛑 손절(ATR)</div>'
-                f'<b style="color:#f87171;font-family:JetBrains Mono,monospace;font-size:0.78rem;">'
-                f'{r["손절가"]:,}</b></div>'
-                f'<div><div class="label">⚖️ 손익비</div>'
-                f'<b style="color:{rr_col};">{r["손익비"]}배</b></div>'
-                f'</div>'
-
-                # 구분선
-                f'<div style="border-top:1px solid #2d3748;margin:0.35rem 0;"></div>'
-
-                # 수급 지표
-                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem;font-size:0.7rem;">'
-                f'<div><div class="label">🏦 기관보유</div>'
-                f'<b style="color:#a78bfa;">{inst_pct}%</b></div>'
-                f'<div><div class="label">📊 거래량비율</div>'
-                f'<b style="color:{vr_col};">{vr}배</b></div>'
-                f'<div><div class="label">📈 RSI</div>'
-                f'<b style="color:#e2e8f0;">{r["RSI"]}</b></div>'
-                f'<div><div class="label">📐 이격도</div>'
-                f'<b style="color:#e2e8f0;">{r["이격도(%)"]}%</b></div>'
-                f'</div>'
-                f'</div>',
-                unsafe_allow_html=True)
-
-            if col.button("➕", key=f"sw_add_{r['종목코드']}_{row_i}",
-                          use_container_width=True):
+                f'<div class="card" style="border-top:3px solid {pc};">'
+                f'<b style="font-size:0.85rem;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{r["종목명"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.65rem;">{r["종목코드"]}|{r["시장"]}</span><br>'
+                f'<span style="color:{pc};font-family:JetBrains Mono,monospace;font-size:0.95rem;font-weight:700;">{r["현재가"]:,}</span>'
+                f'<span style="color:{pc};font-size:0.7rem;margin-left:0.2rem;">{ps}{r["등락률(%)"]}%</span>'
+                f'<div style="border-top:1px solid #2d3748;margin:0.3rem 0;"></div>'
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.15rem;font-size:0.68rem;">'
+                f'<div><div class="label">💰타점</div><b style="color:#fbbf24;font-family:JetBrains Mono,monospace;">{r["매수타점"]:,}</b></div>'
+                f'<div><div class="label">🎯목표</div><b style="color:#34d399;font-family:JetBrains Mono,monospace;">{r["목표가"]:,}</b></div>'
+                f'<div><div class="label">🛑손절</div><b style="color:#f87171;font-family:JetBrains Mono,monospace;">{r["손절가(ATR)"]:,}</b></div>'
+                f'<div><div class="label">⚖️손익비</div><b style="color:{rrc};">{r["손익비"]}배</b></div>'
+                f'<div><div class="label">RSI</div><b>{r["RSI"]}</b></div>'
+                f'<div><div class="label">ATR%</div><b style="color:#94a3b8;">{r["ATR(%)"]}%</b></div>'
+                f'</div></div>', unsafe_allow_html=True)
+            if col.button("➕", key=f"sw_{r['종목코드']}_{row_i}", use_container_width=True):
                 add_to_watchlist(username=username, ticker=r["종목코드"],
                     name=r["종목명"], source="스윙",
                     entry=int(r["매수타점"]), target=int(r["목표가"]),
-                    stoploss=int(r["손절가"]),
+                    stoploss=int(r["손절가(ATR)"]),
                     rsi=float(r.get("RSI",0)), rr_ratio=float(r.get("손익비",0)),
                     market=r.get("시장",""),
                     scan_date=datetime.now().strftime("%Y-%m-%d"),
                     base_price=float(r["현재가"]))
                 st.toast(f"✅ {r['종목명']} 추가!")
 
-    # data_editor
-    st.markdown("---")
-    st.markdown("#### 📋 선택 추가")
-    disp  = ["종목명","종목코드","시장","현재가","등락률(%)","수급태그",
-             "기관보유(%)","거래량비율","RSI","손익비","매수타점","목표가","손절가"]
-    df_ed = df_show[[c for c in disp if c in df_show.columns]].copy()
-    df_ed.insert(0, "선택", False)
-    edited = st.data_editor(
-        df_ed,
-        column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
-        disabled=[c for c in df_ed.columns if c != "선택"],
-        use_container_width=True, hide_index=True, key="swing_editor",
-    )
-    sel = edited[edited["선택"]==True]
-    if st.button(f"➕ 선택 {len(sel)}개 추가", disabled=len(sel)==0,
-                 type="primary", key="swing_sel_add"):
-        added, today = 0, datetime.now().strftime("%Y-%m-%d")
-        for _, row in sel.iterrows():
-            matched = next((r for r in records if r["종목코드"]==row["종목코드"]), None)
-            if not matched: continue
-            rv = add_to_watchlist(username=username, ticker=matched["종목코드"],
-                name=matched["종목명"], source="스윙",
-                entry=int(matched["매수타점"]), target=int(matched["목표가"]),
-                stoploss=int(matched["손절가"]),
-                rsi=float(matched.get("RSI",0)), rr_ratio=float(matched.get("손익비",0)),
-                market=matched.get("시장",""), scan_date=today,
-                base_price=float(matched["현재가"]))
-            if rv in ("added","updated"): added += 1
-        st.success(f"✅ {added}개 추가!")
-        if added > 0: st.balloons()
 
+def page_supply_swing(username: str):
+    """수급 기반 스윙 스캐너 — 수급 스코어링 후 스윙 타점 계산 통합"""
+    st.markdown("## 📡 수급 기반 스윙 스캐너")
+    st.info("💡 수급 점수(외인+기관) → 스윙 타점(ATR) 2단계 분석. 수급 없는 종목은 제외됩니다.")
 
-def page_supply(username: str):
-    st.markdown("## 📡 수급 스캐너")
-    st.info("💡 외국인·기관 수급 점수 100점제 — Yahoo Finance 기반. 60점↑ 종목을 스윙 관심종목에 바로 등록하세요.")
-
-    with st.expander("⚙️ 스캔 설정", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1: market_s  = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="sup_mkt")
-        with c2: top_n     = st.slider("Top N", 10, 50, 20, key="sup_n")
+    # ── 설정 ─────────────────────────────────────────────────
+    with st.expander("⚙️ 스캔 조건", expanded=True):
+        c1,c2,c3,c4 = st.columns(4)
+        with c1:
+            market_s   = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="ssw_mkt")
+            min_score  = st.slider("최소 수급 점수", 0, 100, 30, key="ssw_score")
+        with c2:
+            rsi_min = st.number_input("RSI 하한", value=40, step=5, key="ssw_rsi_min")
+            rsi_max = st.number_input("RSI 상한", value=85, step=5, key="ssw_rsi_max")
         with c3:
-            min_score = st.slider("최소 수급 점수", 0, 100, 40, key="sup_score",
-                                   help="0=전체, 60↑=쌍끌이 강세")
-            days_sel  = st.slider("집계 기간(거래일)", 3, 20, 5, key="sup_days")
+            min_val = st.number_input("최소 거래대금(억)", value=30, step=10, key="ssw_val") * 1e8
+            days_sel= st.slider("수급 집계(거래일)", 3, 15, 5, key="ssw_days")
+        with c4:
+            top_n   = st.slider("Top N", 10, 50, 20, key="ssw_n")
+            atr_s   = st.number_input("손절 ATR배수", value=2.0, step=0.5, key="ssw_atr_s")
 
-    if st.button("🔍 수급 스캔 시작", type="primary", key="sup_scan"):
+    if st.button("🔍 통합 스캔 시작", type="primary", key="ssw_scan"):
+        import yfinance as yf, FinanceDataReader as fdr, ta
+
         prog = st.progress(0, text="종목 수집 중...")
+
+        suffix_map = {"KOSPI":".KS","KOSDAQ":".KQ"}
+        markets    = ["KOSPI","KOSDAQ"] if market_s=="전체" else [market_s]
+        pool       = []
+        for mkt in markets:
+            pool.extend(get_market_tickers(mkt))
+
+        if not pool:
+            st.error("❌ 종목 목록을 가져올 수 없습니다.")
+            return
+
+        total   = len(pool)
         results = []
+        end   = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now()-timedelta(days=250)).strftime("%Y%m%d")
+        s_yf  = start[:4]+"-"+start[4:6]+"-"+start[6:]
+        e_yf  = end[:4]+"-"+end[4:6]+"-"+end[6:]
+        sup_s = (datetime.now()-timedelta(days=days_sel*2+5)).strftime("%Y-%m-%d")
 
-        try:
-            import yfinance as yf
-            suffix_map = {"KOSPI":".KS","KOSDAQ":".KQ"}
-            markets = ["KOSPI","KOSDAQ"] if market_s=="전체" else [market_s]
-            tickers_pool = []
-            for mkt in markets:
-                tickers_pool.extend(get_market_tickers(mkt))
+        for i, t in enumerate(pool):
+            if i % 5 == 0:
+                pct = int(5 + i/total*88)
+                prog.progress(pct, text=f"분석 {i+1}/{total} | 발굴: {len(results)}개")
 
-            total = len(tickers_pool)
-            prog.progress(5, text=f"{total}개 종목 수급 분석 시작...")
+            try:
+                yf_t = t.get("yf_ticker",
+                              t["ticker"]+suffix_map.get(t["market"],".KS"))
+                tk   = yf.Ticker(yf_t)
 
-            end_dt   = datetime.now()
-            start_dt = end_dt - timedelta(days=days_sel*2+10)
-            s_str = start_dt.strftime("%Y-%m-%d")
-            e_str = end_dt.strftime("%Y-%m-%d")
+                # ── STEP 1: 수급 점수 계산 ───────────────────
+                info = {}
+                try: info = tk.info or {}
+                except Exception: pass
 
-            for i, t in enumerate(tickers_pool):
-                if i % 10 == 0:
-                    pct = int(5 + i/total*90)
-                    prog.progress(pct, text=f"분석 {i+1}/{total} | 발굴: {len(results)}개")
-                try:
-                    yf_t = t.get("yf_ticker",
-                                  t["ticker"]+suffix_map.get(t["market"],".KS"))
-                    tk   = yf.Ticker(yf_t)
-                    info = tk.info or {}
+                inst_pct    = float(info.get("heldPercentInstitutions",0) or 0)*100
+                insider_pct = float(info.get("heldPercentInsiders",0) or 0)*100
+                foreign_est = max(0.0, 100-inst_pct-insider_pct)
 
-                    # ── 기관/외국인 보유 데이터 ───────────────
-                    inst_pct    = float(info.get("heldPercentInstitutions",0) or 0)*100
-                    insider_pct = float(info.get("heldPercentInsiders",0) or 0)*100
-                    # Yahoo Finance: floatShares 대비 기관·개인 보유
-                    float_pct   = float(info.get("floatShares",0) or 0)
-                    shares_out  = float(info.get("sharesOutstanding",1) or 1)
-                    # 외국인 추정 (전체 - 기관 - 내부자, 양수인 경우)
-                    foreign_est = max(0, 100 - inst_pct - insider_pct)
-
-                    # ── 가격/거래량 데이터 ────────────────────
-                    hist = tk.history(start=s_str, end=e_str)
-                    if hist is None or len(hist) < 3:
-                        continue
-
-                    avg_vol    = float(hist["Volume"].mean()) if len(hist)>0 else 0
-                    recent_vol = float(hist["Volume"].iloc[-days_sel:].mean()) if len(hist)>=days_sel else avg_vol
-                    vol_ratio  = round(recent_vol/avg_vol, 2) if avg_vol>0 else 1.0
-
-                    cur_price = float(hist["Close"].iloc[-1]) if len(hist)>0 else 0
-                    if cur_price == 0: continue
-
-                    price_chg = float(
-                        (hist["Close"].iloc[-1]-hist["Close"].iloc[-days_sel]) /
-                        hist["Close"].iloc[-days_sel]*100
-                    ) if len(hist)>=days_sel else 0
-
-                    # ── 수급 점수 100점 산출 ──────────────────
-                    # 기관 보유 점수 (40점)
-                    inst_score = min(40, inst_pct * 2)
-                    # 외국인 추정 점수 (30점)
-                    foreign_score = min(30, foreign_est * 0.8)
-                    # 거래량 비율 점수 (20점)
-                    vol_score = min(20, (vol_ratio-1)*20) if vol_ratio>1 else 0
-                    # 수익률 점수 (10점)
-                    ret_score = min(10, max(0, price_chg*2))
-
-                    total_score = round(inst_score+foreign_score+vol_score+ret_score, 1)
-
-                    # 쌍끌이 태그
-                    if inst_pct>=15 and foreign_est>=20 and vol_ratio>=1.3:
-                        tag = "🔥쌍끌이"
-                    elif inst_pct>=10 and vol_ratio>=1.2:
-                        tag = "📈기관강세"
-                    elif foreign_est>=25 and vol_ratio>=1.2:
-                        tag = "🌍외인강세"
-                    elif vol_ratio>=1.5:
-                        tag = "💧거래급증"
-                    else:
-                        tag = ""
-
-                    if total_score < min_score:
-                        continue
-
-                    results.append({
-                        "종목코드":    t["ticker"],
-                        "종목명":      t["name"],
-                        "시장":        t["market"],
-                        "수급점수":    total_score,
-                        "수급태그":    tag,
-                        "기관보유(%)": round(inst_pct, 1),
-                        "외국인추정(%)": round(foreign_est, 1),
-                        "거래량비율":  vol_ratio,
-                        "기간수익률(%)": round(price_chg, 2),
-                        "현재가":      int(cur_price),
-                        # 점수 세부
-                        "_inst_s":    round(inst_score,1),
-                        "_for_s":     round(foreign_score,1),
-                        "_vol_s":     round(vol_score,1),
-                        "_ret_s":     round(ret_score,1),
-                    })
-                except Exception:
+                # 수급 데이터 없으면 제외 (기관+외인 모두 0이면 skip)
+                if inst_pct < 1 and foreign_est < 5:
                     continue
 
-            prog.progress(100, text="✅ 완료!")
+                # 가격/거래량
+                hist = None
+                try:
+                    hist = tk.history(start=sup_s, end=e_yf)
+                except Exception:
+                    pass
 
-            if results:
-                df_r = (pd.DataFrame(results)
-                        .sort_values("수급점수", ascending=False)
-                        .head(top_n).reset_index(drop=True))
-                st.session_state["supply_records"] = df_r.to_dict("records")
-                st.success(f"✅ {len(df_r)}개 발굴! 🔥쌍끌이: {sum(1 for r in df_r.to_dict('records') if r['수급태그']=='🔥쌍끌이')}개")
-            else:
-                st.info("📭 조건 부합 종목 없음. 최소 점수를 낮춰보세요.")
-        except Exception as e:
-            st.warning(f"⚠️ 오류: {e}")
+                if hist is None or len(hist) < 3:
+                    continue
+
+                avg_vol    = float(hist["Volume"].mean()) if len(hist)>0 else 1
+                recent_vol = float(hist["Volume"].iloc[-days_sel:].mean()) if len(hist)>=days_sel else avg_vol
+                vol_ratio  = round(recent_vol/avg_vol, 2) if avg_vol>0 else 1.0
+
+                # 수급 점수
+                inst_s = min(40, inst_pct*2)
+                for_s  = min(30, foreign_est*0.8)
+                vol_s  = min(20, (vol_ratio-1)*20) if vol_ratio>1 else 0
+                score  = round(inst_s+for_s+vol_s, 1)
+
+                if score < min_score:
+                    continue  # 수급 점수 미달 종목 제외
+
+                # 쌍끌이 태그
+                if inst_pct>=15 and foreign_est>=20 and vol_ratio>=1.3:
+                    tag = "🔥쌍끌이"
+                elif inst_pct>=10 and vol_ratio>=1.2:
+                    tag = "📈기관강세"
+                elif foreign_est>=25 and vol_ratio>=1.2:
+                    tag = "🌍외인강세"
+                else:
+                    tag = "📊수급있음"
+
+                # ── STEP 2: 스윙 차트 분석 ──────────────────
+                df = None
+                try:
+                    yf_df = yf.download(yf_t, start=s_yf, end=e_yf,
+                                        progress=False, auto_adjust=True, timeout=8)
+                    if yf_df is not None and len(yf_df) >= 60:
+                        yf_df.columns = [c.lower() if isinstance(c,str)
+                                         else c[0].lower() for c in yf_df.columns]
+                        df = yf_df
+                except Exception:
+                    pass
+                if df is None:
+                    try: df = fdr.DataReader(t["ticker"], start, end)
+                    except Exception: pass
+                if df is None or len(df) < 60:
+                    continue
+
+                # 컬럼 정규화
+                cm = {}
+                for c in df.columns:
+                    cl = c.strip().lower()
+                    if cl=="open": cm[c]="open"
+                    elif cl=="high": cm[c]="high"
+                    elif cl=="low": cm[c]="low"
+                    elif cl in("close","adj close"): cm[c]="close"
+                    elif cl=="volume": cm[c]="volume"
+                df = df.rename(columns=cm)
+                for col in ["open","high","low","close","volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna(subset=["close"])
+                if len(df) < 60: continue
+
+                df["ma5"]  = df["close"].rolling(5).mean()
+                df["ma20"] = df["close"].rolling(20).mean()
+                df["ma60"] = df["close"].rolling(60).mean() if len(df)>=60 else df["ma20"]
+                df["rsi"]  = ta.momentum.RSIIndicator(df["close"],window=14).rsi()
+                atr_ind    = ta.volatility.AverageTrueRange(
+                    df["high"],df["low"],df["close"],window=14)
+                df["atr"]  = atr_ind.average_true_range()
+                df = df.ffill().fillna(0)
+
+                row = df.iloc[-1]
+                if any(pd.isna([row["ma5"],row["ma20"],row["close"]])): continue
+
+                cur_p   = float(row["close"])
+                atr_val = float(row["atr"]) if row["atr"]>0 else cur_p*0.02
+                disp    = cur_p/row["ma20"] if row["ma20"]>0 else 1
+                rsi_v   = float(row["rsi"]) if not pd.isna(row["rsi"]) else 50
+
+                if cur_p<=0: continue
+                if not(rsi_min<=rsi_v<=rsi_max): continue
+                if disp>1.18: continue  # 과열 제외
+
+                # 거래대금 확인
+                trade_val = cur_p * float(row.get("volume",0))
+                if trade_val < min_val: continue
+
+                # ATR 타점
+                ma5f     = float(df["ma5"].iloc[-2]) if len(df)>1 else float(row["ma5"])
+                entry    = ma5f * 0.975
+                high20   = float(df["high"].iloc[-20:].max()) if "high" in df.columns else cur_p*1.10
+                target   = high20 if high20>cur_p else cur_p*1.10
+                stoploss = cur_p - atr_val*atr_s
+                rr       = (target-entry)/(entry-stoploss) if entry>stoploss else 0
+                if rr<0.8: continue
+
+                ret_pct = float(
+                    (hist["Close"].iloc[-1]-hist["Close"].iloc[-days_sel]) /
+                    hist["Close"].iloc[-days_sel]*100
+                ) if len(hist)>=days_sel else 0
+
+                results.append({
+                    "종목코드":      t["ticker"],
+                    "종목명":        t["name"],
+                    "시장":          t["market"],
+                    "수급점수":      score,
+                    "수급태그":      tag,
+                    "기관보유(%)":   round(inst_pct,1),
+                    "외국인추정(%)": round(foreign_est,1),
+                    "거래량비율":    vol_ratio,
+                    "현재가":        int(cur_p),
+                    "RSI":           round(rsi_v,1),
+                    "이격도(%)":     round(disp*100,2),
+                    "ATR":           round(atr_val,0),
+                    "ATR(%)":        round(atr_val/cur_p*100,2),
+                    "매수타점":      int(entry),
+                    "목표가":        int(target),
+                    "손절가(ATR)":   int(stoploss),
+                    "손익비":        round(rr,2),
+                    "기간수익률(%)": round(ret_pct,2),
+                })
+            except Exception:
+                continue
+
+        prog.progress(100, text="✅ 완료!")
+
+        if results:
+            df_out = (pd.DataFrame(results)
+                      .sort_values("수급점수", ascending=False)
+                      .reset_index(drop=True))
+            df_out.index += 1
+            st.session_state["ssw_records"]       = df_out.to_dict("records")
+            st.session_state["swing_results"]     = df_out[["종목코드","종목명"]].to_dict("records")
+            st.session_state["swing_results_full"]= df_out.to_dict("records")
+            st.session_state["supply_records"]    = df_out.to_dict("records")
+            _tmp = user_file(username,"swing_temp.json")
+            with open(_tmp,"w",encoding="utf-8") as _f:
+                json.dump(df_out.to_dict("records"),_f,ensure_ascii=False,indent=2)
+            double = sum(1 for r in df_out.to_dict("records") if r["수급태그"]=="🔥쌍끌이")
+            st.success(f"✅ {len(df_out)}개 발굴 | 🔥쌍끌이: {double}개 | 수급없는 종목 자동제외")
+        else:
+            st.info("📭 조건 부합 종목 없음. 최소 수급 점수나 RSI 범위를 완화해보세요.")
 
     # ── 결과 렌더링 ──────────────────────────────────────────
-    records = st.session_state.get("supply_records", [])
+    records = st.session_state.get("ssw_records", [])
     if not records:
-        st.info("👆 스캔 버튼을 눌러주세요.")
+        st.markdown(
+            '<div class="card" style="text-align:center;padding:2rem;">'
+            '<div style="font-size:2rem;">🔍</div>'
+            '<div style="color:#94a3b8;margin-top:0.5rem;">스캔 버튼을 눌러 분석을 시작하세요</div>'
+            '</div>', unsafe_allow_html=True)
         return
 
-    df_r = pd.DataFrame(records)
+    df_show = pd.DataFrame(records)
+    n = len(records)
+    st.markdown(f"### 📊 발굴 종목 {n}개")
+    st.caption("수급 점수 내림차순 | 수급 데이터 없는 종목 자동 제외 | ATR 손절/20일고가 익절")
+
+    # 전체 등록
+    fa,fb = st.columns([3,1])
+    with fa:
+        st.markdown(
+            f'<div style="background:linear-gradient(90deg,#f8717122,#fbbf2411);'
+            f'border:1px solid #fbbf24;border-radius:10px;padding:0.5rem 1rem;'
+            f'font-size:0.85rem;color:#fbbf24;">⚡ 전체 <b>{n}개</b> 관심종목 등록</div>',
+            unsafe_allow_html=True)
+    with fb:
+        if st.button("🔥 전체 추가", key="ssw_all", type="primary"):
+            added, today = 0, datetime.now().strftime("%Y-%m-%d")
+            for r in records:
+                rv = add_to_watchlist(username=username,ticker=r["종목코드"],
+                    name=r["종목명"],source="수급스윙",
+                    entry=int(r["매수타점"]),target=int(r["목표가"]),
+                    stoploss=int(r["손절가(ATR)"]),
+                    rsi=float(r.get("RSI",0)),rr_ratio=float(r.get("손익비",0)),
+                    market=r.get("시장",""),scan_date=today,
+                    base_price=float(r["현재가"]))
+                if rv in("added","updated"): added+=1
+            st.success(f"✅ {added}개 추가!")
+            if added>0: st.balloons()
+
     st.markdown("---")
 
-    # 요약
-    s1,s2,s3,s4 = st.columns(4)
-    tag_cnt = sum(1 for r in records if r["수급태그"]=="🔥쌍끌이")
-    for col, label, val, color in [
-        (s1,"📡 발굴",     f"{len(records)}개",                        "#38bdf8"),
-        (s2,"🔥 쌍끌이",  f"{tag_cnt}개",                              "#f87171"),
-        (s3,"🏦 평균기관", f"{df_r['기관보유(%)'].mean():.1f}%",        "#a78bfa"),
-        (s4,"📊 평균점수", f"{df_r['수급점수'].mean():.0f}점",          "#fbbf24"),
-    ]:
-        col.markdown(
-            f'<div class="card" style="text-align:center;">'
-            f'<div class="label">{label}</div>'
-            f'<div style="color:{color};font-family:JetBrains Mono,monospace;'
-            f'font-size:1.2rem;font-weight:900;">{val}</div>'
-            f'</div>', unsafe_allow_html=True)
-
-    st.caption(f"수급 점수 내림차순 | {datetime.now().strftime('%Y-%m-%d %H:%M')} 기준")
-
     # 4열 카드
-    tag_colors = {"🔥쌍끌이":"#f87171","📈기관강세":"#a78bfa",
-                  "🌍외인강세":"#34d399","💧거래급증":"#38bdf8","":"#2d3748"}
+    tag_col = {"🔥쌍끌이":"#f87171","📈기관강세":"#a78bfa",
+               "🌍외인강세":"#34d399","📊수급있음":"#38bdf8"}
     for row_i in range(0, len(records), 4):
-        row_recs = records[row_i: row_i+4]
         cols = st.columns(4)
-        for col, r in zip(cols, row_recs):
-            rank    = row_i + row_recs.index(r) + 1
-            score   = r["수급점수"]
-            tag     = r.get("수급태그","")
-            tc      = tag_colors.get(tag,"#2d3748")
-            sc_col  = "#34d399" if score>=70 else ("#fbbf24" if score>=50 else "#94a3b8")
-            ret_col = "#38bdf8" if r["기간수익률(%)"]>=0 else "#f87171"
-            ret_sgn = "+" if r["기간수익률(%)"]>=0 else ""
-            vr_col  = "#34d399" if r["거래량비율"]>=1.5 else "#fbbf24"
-
-            # 수급 점수 게이지 바
-            bar_w = min(score, 100)
-            bar_c = "#34d399" if bar_w>=70 else ("#fbbf24" if bar_w>=50 else "#94a3b8")
+        for col, r in zip(cols, records[row_i:row_i+4]):
+            rank   = row_i+records[row_i:row_i+4].index(r)+1+row_i
+            score  = r["수급점수"]
+            tag    = r.get("수급태그","")
+            tc     = tag_col.get(tag,"#2d3748")
+            sc_c   = "#34d399" if score>=70 else("#fbbf24" if score>=50 else"#94a3b8")
+            pc     = "#38bdf8" if r["기간수익률(%)"]>=0 else"#f87171"
+            ps     = "+" if r["기간수익률(%)"]>=0 else""
+            vc     = "#34d399" if r["거래량비율"]>=1.5 else"#fbbf24"
+            rrc    = "#34d399" if r["손익비"]>=2 else("#fbbf24" if r["손익비"]>=1.5 else"#94a3b8")
+            bw     = min(score,100)
 
             col.markdown(
                 f'<div class="card" style="border-top:3px solid {tc};">'
+                # 헤더
                 f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
                 f'<div style="flex:1;min-width:0;">'
-                f'<b style="font-size:0.85rem;white-space:nowrap;overflow:hidden;'
-                f'text-overflow:ellipsis;display:block;">#{rank} {r["종목명"]}</b>'
-                f'<span style="color:#94a3b8;font-size:0.65rem;">{r["종목코드"]} | {r["시장"]}</span>'
+                f'<b style="font-size:0.83rem;display:block;white-space:nowrap;'
+                f'overflow:hidden;text-overflow:ellipsis;">#{rank+1} {r["종목명"]}</b>'
+                f'<span style="color:#94a3b8;font-size:0.63rem;">{r["종목코드"]}|{r["시장"]}</span>'
                 f'</div>'
-                f'{"<span style=\'font-size:0.7rem;font-weight:700;color:"+tc+"\'>"+tag+"</span>" if tag else ""}'
+                f'<span style="color:{tc};font-size:0.7rem;font-weight:700;'
+                f'white-space:nowrap;margin-left:0.2rem;">{tag}</span>'
                 f'</div>'
-
                 # 수급 점수 게이지
-                f'<div style="margin:0.4rem 0;">'
-                f'<div style="display:flex;justify-content:space-between;font-size:0.68rem;">'
-                f'<span style="color:#94a3b8;">수급 점수</span>'
-                f'<b style="color:{sc_col};">{score:.0f}점</b></div>'
-                f'<div style="background:#2d3748;border-radius:4px;height:6px;margin-top:2px;">'
-                f'<div style="background:{bar_c};width:{bar_w}%;height:6px;border-radius:4px;"></div>'
+                f'<div style="margin:0.35rem 0;">'
+                f'<div style="display:flex;justify-content:space-between;font-size:0.67rem;">'
+                f'<span style="color:#94a3b8;">수급점수</span>'
+                f'<b style="color:{sc_c};">{score:.0f}점</b></div>'
+                f'<div style="background:#2d3748;border-radius:3px;height:5px;margin-top:2px;">'
+                f'<div style="background:{sc_c};width:{bw}%;height:5px;border-radius:3px;"></div>'
                 f'</div></div>'
-
-                # 세부 점수
-                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem;font-size:0.68rem;color:#94a3b8;">'
-                f'<span>기관 {r["_inst_s"]:.0f}pt</span>'
-                f'<span>외인 {r["_for_s"]:.0f}pt</span>'
-                f'<span>거래량 {r["_vol_s"]:.0f}pt</span>'
-                f'<span>수익률 {r["_ret_s"]:.0f}pt</span>'
+                # 수급 수치
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.15rem;font-size:0.68rem;margin-bottom:0.3rem;">'
+                f'<span style="color:#a78bfa;">기관 {r["기관보유(%)"]}%</span>'
+                f'<span style="color:#34d399;">외인 {r["외국인추정(%)"]}%</span>'
+                f'<span style="color:{vc};">거래 {r["거래량비율"]}배</span>'
+                f'<span style="color:{pc};">{ps}{r["기간수익률(%)"]}%</span>'
                 f'</div>'
-                f'<div style="border-top:1px solid #2d3748;margin:0.3rem 0;"></div>'
-
-                # 핵심 수치
-                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.2rem;font-size:0.72rem;">'
-                f'<div><div class="label">🏦 기관보유</div>'
-                f'<b style="color:#a78bfa;">{r["기관보유(%)"]}%</b></div>'
-                f'<div><div class="label">🌍 외인추정</div>'
-                f'<b style="color:#34d399;">{r["외국인추정(%)"]}%</b></div>'
-                f'<div><div class="label">📊 거래량비율</div>'
-                f'<b style="color:{vr_col};">{r["거래량비율"]}배</b></div>'
-                f'<div><div class="label">💹 수익률</div>'
-                f'<b style="color:{ret_col};">{ret_sgn}{r["기간수익률(%)"]}%</b></div>'
+                f'<div style="border-top:1px solid #2d3748;margin:0.25rem 0;"></div>'
+                # 스윙 타점
+                f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.15rem;font-size:0.68rem;">'
+                f'<div><div class="label">💰타점</div>'
+                f'<b style="color:#fbbf24;font-family:JetBrains Mono,monospace;font-size:0.75rem;">{r["매수타점"]:,}</b></div>'
+                f'<div><div class="label">🎯목표</div>'
+                f'<b style="color:#34d399;font-family:JetBrains Mono,monospace;font-size:0.75rem;">{r["목표가"]:,}</b></div>'
+                f'<div><div class="label">🛑손절(ATR)</div>'
+                f'<b style="color:#f87171;font-family:JetBrains Mono,monospace;font-size:0.75rem;">{r["손절가(ATR)"]:,}</b></div>'
+                f'<div><div class="label">⚖️손익비</div>'
+                f'<b style="color:{rrc};">{r["손익비"]}배</b></div>'
                 f'</div></div>',
                 unsafe_allow_html=True)
 
-            # 관심종목 등록 (60점↑ 강조)
-            btn_label = "⭐ 관심등록" if score>=60 else "➕ 등록"
-            btn_type  = "primary" if score>=60 else "secondary"
-            if col.button(btn_label, key=f"sup_add_{r['종목코드']}_{row_i}",
+            if col.button("➕", key=f"ssw_{r['종목코드']}_{row_i}",
                           use_container_width=True):
-                cur_p = float(r["현재가"])
-                rv = add_to_watchlist(username=username, ticker=r["종목코드"],
-                    name=r["종목명"], source="수급",
-                    entry=int(cur_p), target=int(cur_p*1.15),
-                    stoploss=int(cur_p*0.93),
+                add_to_watchlist(username=username,ticker=r["종목코드"],
+                    name=r["종목명"],source="수급스윙",
+                    entry=int(r["매수타점"]),target=int(r["목표가"]),
+                    stoploss=int(r["손절가(ATR)"]),
+                    rsi=float(r.get("RSI",0)),rr_ratio=float(r.get("손익비",0)),
                     market=r.get("시장",""),
                     scan_date=datetime.now().strftime("%Y-%m-%d"),
-                    base_price=cur_p)
-                st.toast(f"{'✅' if rv=='added' else '🔄'} {r['종목명']} 등록! (수급점수 {score:.0f}점)")
+                    base_price=float(r["현재가"]))
+                st.toast(f"✅ {r['종목명']} 추가!")
 
-    # 전체 테이블
+    # 테이블
     st.markdown("---")
-    disp_cols = ["종목명","종목코드","시장","수급점수","수급태그",
-                 "기관보유(%)","외국인추정(%)","거래량비율","기간수익률(%)","현재가"]
-    st.dataframe(df_r[disp_cols], use_container_width=True, hide_index=True)
+    disp = ["종목명","종목코드","시장","수급점수","수급태그","기관보유(%)",
+            "외국인추정(%)","거래량비율","현재가","RSI","손익비","매수타점","목표가","손절가(ATR)"]
+    st.dataframe(df_show[[c for c in disp if c in df_show.columns]],
+                 use_container_width=True, hide_index=True)
 
 
 def page_super_signal(username: str):
@@ -1998,8 +1991,10 @@ def page_super_signal(username: str):
             f'<b style="color:{s_col}">{s_ok}</b></div>',
             unsafe_allow_html=True)
     with c3:
-        sup_ok = f"✅ {len(supply_list)}개 (60점↑: {len(supply_codes)}개)" if supply_list else "❌ 미실행"
-        sup_col = "#34d399" if supply_list else "#f87171"
+        _sup_n   = len(supply_list) if supply_list else 0
+        _sup_60  = len(supply_codes) if supply_codes else 0
+        sup_ok   = f"✅ {_sup_n}개 (60점↑: {_sup_60}개)" if _sup_n>0 else "❌ 미실행"
+        sup_col  = "#34d399" if _sup_n>0 else "#f87171"
         st.markdown(
             f'<div class="card" style="text-align:center;">'
             f'<div class="label">📡 수급 스캐너</div>'
@@ -2010,10 +2005,17 @@ def page_super_signal(username: str):
         st.warning("⚠️ 퀀트 스캐너와 스윙 스캐너를 **모두** 먼저 실행해 주세요!")
         return
 
-    # 수급 스캐너 데이터도 연동
-    supply_list  = st.session_state.get("supply_records", [])
-    supply_codes = {str(r.get("종목코드","")).zfill(6): r.get("수급점수",0)
-                    for r in supply_list if r.get("수급점수",0) >= 60}
+    # 수급 스캐너 데이터 안전하게 로드
+    supply_list  = st.session_state.get("supply_records") or []
+    supply_codes = {}
+    for r in supply_list:
+        try:
+            code  = str(r.get("종목코드","")).zfill(6)
+            score = float(r.get("수급점수", 0))
+            if score >= 60:
+                supply_codes[code] = score
+        except Exception:
+            pass
 
     # 공통 종목 탐색
     quant_codes = {str(q.get("종목코드","")).zfill(6): q.get("종목명","") for q in quant_list}
@@ -2534,7 +2536,7 @@ def main():
             "💼 내 포트폴리오",
             "🧮 퀀트 스캐너 2차 정밀",
             "📈 스윙 매매",
-            "📡 수급 스캐너",
+            "📡 수급 기반 스윙 스캐너",
             "🚀 슈퍼 시그널",
             "🗄️ 관심종목",
             "🌅 모닝 체크",
@@ -2558,23 +2560,29 @@ def main():
     if menu in ["🌅 모닝 체크"]:
         show_notification_bar(username)
 
-    # 페이지 라우팅
-    if menu == "📊 대시보드":
+    # 페이지 라우팅 — 전체 try-except 보호
+    import traceback as _tb
+    _page_fns = {
+        "📊 대시보드":          page_dashboard,
+        "💼 내 포트폴리오":     page_portfolio,
+        "🧮 퀀트 스캐너 2차 정밀": page_quant,
+        "📈 스윙 매매":         page_swing,
+        "📡 수급 기반 스윙 스캐너": page_supply_swing,
+        "🚀 슈퍼 시그널":       page_super_signal,
+        "🗄️ 관심종목":          page_vault,
+        "🌅 모닝 체크":         page_morning,
+    }
+    _fn = _page_fns.get(menu)
+    if _fn:
+        try:
+            _fn(username)
+        except Exception as _page_err:
+            st.error(f"⚠️ 페이지 오류: {type(_page_err).__name__}: {_page_err}")
+            st.info("다른 메뉴를 눌렀다가 다시 와보거나 새로고침 해주세요.")
+            with st.expander("상세 오류 (개발자용)"):
+                st.code(_tb.format_exc())
+    else:
         page_dashboard(username)
-    elif menu == "💼 내 포트폴리오":
-        page_portfolio(username)
-    elif menu == "🧮 퀀트 스캐너 2차 정밀":
-        page_quant(username)
-    elif menu == "📈 스윙 매매":
-        page_swing(username)
-    elif menu == "📡 수급 스캐너":
-        page_supply(username)
-    elif menu == "🚀 슈퍼 시그널":
-        page_super_signal(username)
-    elif menu == "🗄️ 관심종목":
-        page_vault(username)
-    elif menu == "🌅 모닝 체크":
-        page_morning(username)
 
 
 if __name__ == "__main__":
