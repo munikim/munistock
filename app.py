@@ -390,7 +390,7 @@ _KOSDAQ_TICKERS = [
     ("065620","고려신용정보"),("041190","우리기술투자"),("336370","솔루스첨단소재"),
 ]
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=1800)
 def get_market_tickers(market: str) -> list:
     """
     종목 리스트 수집 — 4단계 폴백:
@@ -491,7 +491,7 @@ def get_stock_list() -> pd.DataFrame:
         pass
     return pd.DataFrame(rows).drop_duplicates("code").reset_index(drop=True)
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=180)
 def get_price(ticker: str) -> float:
     """현재가 조회 — 휴장일/네트워크 오류 시 0.0 반환 (에러 없음)"""
     try:
@@ -508,7 +508,7 @@ def get_price(ticker: str) -> float:
         pass  # 휴장일, 네트워크 오류 등 조용히 처리
     return 0.0
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300)
 def get_ohlcv_cached(ticker: str, days: int = 130):
     """OHLCV 조회 — 휴장일/네트워크 오류 시 None 반환"""
     try:
@@ -1794,7 +1794,6 @@ def page_vault(username: str):
     st.caption(f"수익 {pos}개 | 손실 {neg}개")
 
 
-@st.fragment
 def _morning_realtime(watchlist: list, username: str):
     """fragment: 새로고침 버튼 클릭 시에만 이 블록만 재실행 (전체 깜빡임 없음)"""
     col_r, col_i = st.columns([1, 3])
