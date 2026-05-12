@@ -809,7 +809,7 @@ def page_portfolio(username: str):
             st.markdown("### ⚙️ ATR 설정")
             atr_stop = st.number_input("손절 ATR배수", value=2.0, step=0.5,
                                         min_value=0.5, key="pf_atrs")
-            atr_tgt  = st.number_input("익절 ATR배수", value=6.0, step=0.5,
+            atr_tgt  = st.number_input("익절 ATR배수", value=3.0, step=0.5,
                                         min_value=1.0, key="pf_atrt")
 
         portfolio = load_portfolio(username)
@@ -820,18 +820,46 @@ def page_portfolio(username: str):
             try:
                 stock_df = get_stock_list()
                 if stock_df.empty:
-                    sel_name = st.text_input("종목명", key="pf_name")
-                    sel_ticker = st.text_input("종목코드", key="pf_code")
-                else:
-                    sel = st.selectbox("종목 검색", stock_df["display"].tolist(),
-                                       index=None, placeholder="종목명 입력...", key="pf_sel")
+                    # 내장 리스트로 자동완성 시도
+                    _all_tickers = (
+                        [{"name":n,"code":c,"market":"KOSPI"}  for c,n in _KOSPI_TICKERS] +
+                        [{"name":n,"code":c,"market":"KOSDAQ"} for c,n in _KOSDAQ_TICKERS]
+                    )
+                    _disp_list = [f"{t['name']} ({t['code']})" for t in _all_tickers]
+                    sel = st.selectbox("종목 검색 (내장 리스트)", _disp_list,
+                                       index=None, placeholder="종목명 입력...", key="pf_sel_fb")
                     if sel:
-                        matched = stock_df[stock_df["display"]==sel].iloc[0]
-                        sel_name   = matched["name"]
-                        sel_ticker = matched["code"]
-                        st.caption(f"✅ {sel_name} | {sel_ticker}")
+                        _matched = next((t for t in _all_tickers
+                                         if f"{t['name']} ({t['code']})" == sel), None)
+                        sel_name   = _matched["name"]   if _matched else ""
+                        sel_ticker = _matched["code"]   if _matched else ""
+                        if sel_name:
+                            st.success(f"✅ **{sel_name}** | 코드: `{sel_ticker}` | {_matched['market']}")
                     else:
                         sel_name = sel_ticker = ""
+                else:
+                    sel = st.selectbox("종목 검색", stock_df["display"].tolist(),
+                                       index=None, placeholder="종목명 또는 코드 입력...", key="pf_sel")
+                    if sel:
+                        matched    = stock_df[stock_df["display"]==sel].iloc[0]
+                        sel_name   = matched["name"]
+                        sel_ticker = matched["code"]
+                        st.success(f"✅ **{sel_name}** | 코드: `{sel_ticker}` | {matched['market']}")
+                    else:
+                        sel_name = sel_ticker = ""
+
+                # 종목코드 직접 입력 (자동완성 안 될 때 fallback)
+                if not sel_ticker:
+                    sel_ticker = st.text_input("종목코드 직접 입력 (6자리)", "",
+                                               max_chars=6, key="pf_code_manual",
+                                               placeholder="005930")
+                    if sel_ticker and not sel_name:
+                        # 코드로 이름 역탐색
+                        _found = next((t for t in (
+                            [{"name":n,"code":c} for c,n in _KOSPI_TICKERS] +
+                            [{"name":n,"code":c} for c,n in _KOSDAQ_TICKERS]
+                        ) if t["code"]==sel_ticker.zfill(6)), None)
+                        sel_name = _found["name"] if _found else sel_ticker
 
                 c1,c2,c3,c4 = st.columns([2,1,2,1])
                 with c1: trade_dt = st.date_input("거래일", value=datetime.today(), key="pf_dt")
@@ -1413,19 +1441,46 @@ def page_supply_swing(username: str):
 
     # ── 설정 ─────────────────────────────────────────────────
     with st.expander("⚙️ 스캔 조건", expanded=True):
+        # ── 초기값 설정 안내 ────────────────────────────────────
+        # 아래 value= 값을 원하는 기본값으로 수정하세요:
+        #   market_s  → "KOSPI" | "KOSDAQ" | "전체"
+        #   min_score → 0~100 (수급 점수 최소값, 높을수록 엄격)
+        #   rsi_min   → 0~100 (RSI 하한, 보통 40~50)
+        #   rsi_max   → 0~100 (RSI 상한, 보통 80~85)
+        #   min_val   → 억 단위 거래대금 (기본 30억)
+        #   days_sel  → 수급 집계 거래일 수 (기본 5일)
+        #   top_n     → 결과 상위 N개 (기본 20개)
+        #   atr_s     → ATR 손절 배수 (기본 2.0)
+        # ────────────────────────────────────────────────────
         c1,c2,c3,c4 = st.columns(4)
         with c1:
-            market_s   = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="ssw_mkt")
-            min_score  = st.slider("최소 수급 점수", 0, 100, 30, key="ssw_score")
+            market_s   = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"],
+                                       index=0,          # ← 0=KOSPI, 1=KOSDAQ, 2=전체
+                                       key="ssw_mkt")
+            min_score  = st.slider("최소 수급 점수", 0, 100,
+                                    30,                  # ← 기본값: 30점
+                                    key="ssw_score")
         with c2:
-            rsi_min = st.number_input("RSI 하한", value=40, step=5, key="ssw_rsi_min")
-            rsi_max = st.number_input("RSI 상한", value=85, step=5, key="ssw_rsi_max")
+            rsi_min = st.number_input("RSI 하한",
+                                       value=40,         # ← 기본값: 40
+                                       step=5, key="ssw_rsi_min")
+            rsi_max = st.number_input("RSI 상한",
+                                       value=85,         # ← 기본값: 85
+                                       step=5, key="ssw_rsi_max")
         with c3:
-            min_val = st.number_input("최소 거래대금(억)", value=30, step=10, key="ssw_val") * 1e8
-            days_sel= st.slider("수급 집계(거래일)", 3, 15, 5, key="ssw_days")
+            min_val = st.number_input("최소 거래대금(억)",
+                                       value=30,         # ← 기본값: 30억
+                                       step=10, key="ssw_val") * 1e8
+            days_sel= st.slider("수급 집계(거래일)", 3, 15,
+                                  5,                     # ← 기본값: 5거래일
+                                  key="ssw_days")
         with c4:
-            top_n   = st.slider("Top N", 10, 50, 20, key="ssw_n")
-            atr_s   = st.number_input("손절 ATR배수", value=2.0, step=0.5, key="ssw_atr_s")
+            top_n   = st.slider("Top N", 10, 50,
+                                  20,                    # ← 기본값: 20개
+                                  key="ssw_n")
+            atr_s   = st.number_input("손절 ATR배수",
+                                       value=2.0,        # ← 기본값: 2.0배
+                                       step=0.5, key="ssw_atr_s")
 
     if st.button("🔍 통합 스캔 시작", type="primary", key="ssw_scan"):
         import yfinance as yf, FinanceDataReader as fdr, ta
@@ -2289,7 +2344,6 @@ def main():
             "📊 대시보드",
             "💼 내 포트폴리오",
             "🧮 퀀트 스캐너 2차 정밀",
-            "📈 스윙 매매",
             "📡 수급 기반 스윙 스캐너",
             "🚀 슈퍼 시그널",
             "🗄️ 관심종목",
