@@ -1121,25 +1121,36 @@ def page_quant(username: str):
                     try:
                         s_yf = start[:4]+"-"+start[4:6]+"-"+start[6:]
                         e_yf = end[:4]+"-"+end[4:6]+"-"+end[6:]
-                        tmp  = yf.download(yf_t, start=s_yf, end=e_yf,
+                        tmp = yf.download(yf_t, start=s_yf, end=e_yf,
                                            progress=False, auto_adjust=True, timeout=8)
                         if tmp is not None and len(tmp) >= 60:
-                            tmp.columns = [c.lower() if isinstance(c,str)
-                                           else c[0].lower() for c in tmp.columns]
-                            df = tmp
+                            flat_cols = []
+                            for c in tmp.columns:
+                                if isinstance(c, tuple):
+                                    cn = str(c[0]).strip().lower()
+                                    ct = str(c[1]).strip() if len(c)>1 else ""
+                                    if ct and ct != yf_t: continue
+                                    flat_cols.append(cn)
+                                else:
+                                    flat_cols.append(str(c).strip().lower())
+                            if len(flat_cols) == len(tmp.columns):
+                                tmp.columns = flat_cols
+                            df = tmp.sort_index(ascending=True)
                     except Exception: pass
                     if df is None:
-                        try: df = fdr.DataReader(t["ticker"], start, end)
+                        try:
+                            df = fdr.DataReader(str(t["ticker"]).zfill(6), start, end)
+                            if df is not None: df = df.sort_index(ascending=True)
                         except Exception: pass
-                    if df is None or len(df)<60: return None
+                    if df is None or len(df) < 60: return None
 
-                    for c in df.columns:
-                        cl = c.strip().lower()
-                        if cl in("close","adj close"): df=df.rename(columns={c:"close"})
-                        elif cl=="volume":             df=df.rename(columns={c:"volume"})
+                    for c in list(df.columns):
+                        cl = str(c).strip().lower()
+                        if cl in("close","adj close"): df = df.rename(columns={c:"close"})
+                        elif cl == "volume":           df = df.rename(columns={c:"volume"})
                     df["close"] = pd.to_numeric(df["close"], errors="coerce")
                     df = df.dropna(subset=["close"])
-                    if len(df)<60: return None
+                    if len(df) < 60: return None
 
                     momentum  = (df["close"].iloc[-1]/df["close"].iloc[0]-1)*100
                     cur_p     = float(df["close"].iloc[-1])
@@ -1173,7 +1184,7 @@ def page_quant(username: str):
                         is_a = near and spk and dec
 
                     return {
-                        "is_a": is_a, "종목코드": t["ticker"], "종목명": t["name"],
+                        "is_a": is_a, "종목코드": str(t["ticker"]).zfill(6), "종목명": t["name"],
                         "시장": t["market"], "현재가": int(cur_p),
                         "종합점수": score, "모멘텀": round(mom_s,1),
                         "재무점수": round(roe_s+opm_s,1), "수급점수": round(inst_s+for_s+vol_s,1),
@@ -1290,33 +1301,52 @@ def page_swing(username: str):
                 try:
                     yf_t = t.get("yf_ticker", t["ticker"]+sfx.get(t["market"],".KS"))
                     df   = None
+                    # ── yfinance MultiIndex 컬럼 안전 처리 ──
+                    df = None
                     try:
+                        import yfinance as yf
                         tmp = yf.download(yf_t, start=s_yf, end=e_yf,
                                           progress=False, auto_adjust=True, timeout=8)
-                        if tmp is not None and len(tmp)>=120:
-                            tmp.columns = [c.lower() if isinstance(c,str)
-                                           else c[0].lower() for c in tmp.columns]
+                        if tmp is not None and len(tmp) >= 120:
+                            # MultiIndex 평탄화 (yfinance 1.x 대응)
+                            flat_cols = []
+                            for c in tmp.columns:
+                                if isinstance(c, tuple):
+                                    col_name   = str(c[0]).strip().lower()
+                                    col_ticker = str(c[1]).strip() if len(c)>1 else ""
+                                    if col_ticker and col_ticker != yf_t: continue
+                                    flat_cols.append(col_name)
+                                else:
+                                    flat_cols.append(str(c).strip().lower())
+                            if len(flat_cols) == len(tmp.columns):
+                                tmp.columns = flat_cols
+                            # 날짜 오름차순 정렬 (iloc[-1] = 최신가 보장)
+                            tmp = tmp.sort_index(ascending=True)
                             df = tmp
                     except Exception: pass
                     if df is None:
-                        try: df = fdr.DataReader(t["ticker"], start, end)
-                        except Exception: pass
-                    if df is None or len(df)<120: continue
+                        try:
+                            df = fdr.DataReader(str(t["ticker"]).zfill(6), start, end)
+                            if df is not None:
+                                df = df.sort_index(ascending=True)
+                        except Exception: df = None
+                    if df is None or len(df) < 120: continue
 
+                    # 컬럼 정규화
                     cm = {}
                     for c in df.columns:
-                        cl = c.strip().lower()
-                        if cl=="open": cm[c]="open"
-                        elif cl=="high": cm[c]="high"
-                        elif cl=="low": cm[c]="low"
-                        elif cl in("close","adj close"): cm[c]="close"
-                        elif cl=="volume": cm[c]="volume"
+                        cl = str(c).strip().lower()
+                        if cl == "open":               cm[c] = "open"
+                        elif cl == "high":             cm[c] = "high"
+                        elif cl == "low":              cm[c] = "low"
+                        elif cl in("close","adj close"): cm[c] = "close"
+                        elif cl == "volume":           cm[c] = "volume"
                     df = df.rename(columns=cm)
                     for col in ["open","high","low","close","volume"]:
                         if col in df.columns:
                             df[col] = pd.to_numeric(df[col], errors="coerce")
                     df = df.dropna(subset=["open","high","low","close","volume"])
-                    if len(df)<120: continue
+                    if len(df) < 120: continue
 
                     df["tv"]   = df["close"]*df["volume"]
                     df["ma5"]  = df["close"].rolling(5).mean()
@@ -1358,7 +1388,7 @@ def page_swing(username: str):
                     if rr<1.0: continue
 
                     results.append({
-                        "종목명": t["name"], "종목코드": t["ticker"], "시장": t["market"],
+                        "종목명": t["name"], "종목코드": str(t["ticker"]).zfill(6), "시장": t["market"],
                         "현재가": int(cur_p), "등락률(%)": round(chg*100,2),
                         "거래대금(억)": round(row["tv"]/1e8,1),
                         "RSI": round(float(row["rsi"]),1),
@@ -1562,18 +1592,30 @@ def page_supply_swing(username: str):
                     tag = "📊수급있음"
 
                 # ── STEP 2: 스윙 차트 분석 ──────────────────
+                # ── yfinance MultiIndex 안전 처리 + 날짜 정렬 ──
                 df = None
                 try:
                     yf_df = yf.download(yf_t, start=s_yf, end=e_yf,
                                         progress=False, auto_adjust=True, timeout=8)
                     if yf_df is not None and len(yf_df) >= 60:
-                        yf_df.columns = [c.lower() if isinstance(c,str)
-                                         else c[0].lower() for c in yf_df.columns]
-                        df = yf_df
+                        flat_cols = []
+                        for c in yf_df.columns:
+                            if isinstance(c, tuple):
+                                cn = str(c[0]).strip().lower()
+                                ct = str(c[1]).strip() if len(c)>1 else ""
+                                if ct and ct != yf_t: continue
+                                flat_cols.append(cn)
+                            else:
+                                flat_cols.append(str(c).strip().lower())
+                        if len(flat_cols) == len(yf_df.columns):
+                            yf_df.columns = flat_cols
+                        df = yf_df.sort_index(ascending=True)  # 최신가 보장
                 except Exception:
                     pass
                 if df is None:
-                    try: df = fdr.DataReader(t["ticker"], start, end)
+                    try:
+                        df = fdr.DataReader(str(t["ticker"]).zfill(6), start, end)
+                        if df is not None: df = df.sort_index(ascending=True)
                     except Exception: pass
                 if df is None or len(df) < 60:
                     continue
@@ -1634,7 +1676,7 @@ def page_supply_swing(username: str):
                 ) if len(hist)>=days_sel else 0
 
                 results.append({
-                    "종목코드":      t["ticker"],
+                    "종목코드":      str(t["ticker"]).zfill(6),
                     "종목명":        t["name"],
                     "시장":          t["market"],
                     "수급점수":      score,
