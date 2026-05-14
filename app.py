@@ -572,29 +572,53 @@ def get_stock_list() -> pd.DataFrame:
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_price(ticker: str) -> float:
-    """현재가 조회 — 종목코드 정규화 + 타임아웃 보장 (무한대기 방지)"""
+    """
+    현재가 조회 — 실제 체결가 기준 (배당조정가 아님)
+    우선순위: yf.Ticker.fast_info → yf history(period=5d, auto_adjust=False) → FDR
+    """
     try:
-        # 종목코드 반드시 6자리 문자열로 정규화
         ticker = str(ticker).strip().zfill(6)
+        import yfinance as yf
         import FinanceDataReader as fdr
-        import signal
 
-        end   = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        # 시장 suffix 추정 (.KS 먼저, 실패 시 .KQ)
+        for suffix in [".KS", ".KQ"]:
+            yf_t = ticker + suffix
+            try:
+                # 방법 1: fast_info (가장 빠름, 실시간에 가까움)
+                tk = yf.Ticker(yf_t)
+                fi = tk.fast_info
+                price = getattr(fi, "last_price", None)
+                if price and float(price) > 0:
+                    return float(price)
 
-        # 타임아웃 10초 — 무한 대기 방지
-        df = None
+                # 방법 2: history auto_adjust=False (배당조정 안 한 실제 종가)
+                hist = tk.history(period="5d", auto_adjust=False)
+                if hist is not None and len(hist) > 0:
+                    hist = hist.sort_index(ascending=True)
+                    for c in hist.columns:
+                        if c.strip().lower() == "close":
+                            v = hist[c].iloc[-1]
+                            if pd.notna(v) and float(v) > 0:
+                                return float(v)
+            except Exception:
+                continue
+
+        # 방법 3: FDR 폴백
         try:
+            end   = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
             df = fdr.DataReader(ticker, start, end)
+            if df is not None and len(df) > 0:
+                df = df.sort_index(ascending=True)
+                for c in df.columns:
+                    if c.strip().lower() in ("close", "adj close"):
+                        v = df[c].iloc[-1]
+                        if pd.notna(v) and float(v) > 0:
+                            return float(v)
         except Exception:
             pass
 
-        if df is not None and len(df) > 0:
-            df = df.sort_index(ascending=True)  # 최신가 보장
-            for c in df.columns:
-                if c.strip().lower() in ("close", "adj close"):
-                    v = df[c].iloc[-1]
-                    return float(v) if pd.notna(v) and float(v) > 0 else 0.0
     except Exception:
         pass
     return 0.0
@@ -1168,7 +1192,7 @@ def page_quant(username: str):
 
                     # 거래량 (200일)
                     hist = None
-                    try: hist = tk.history(start=start_200)
+                    try: hist = tk.history(start=start_200, auto_adjust=False)
                     except Exception: pass
                     if hist is None or len(hist) < 5: return None
                     avg_vol   = float(hist["Volume"].mean()) if len(hist)>0 else 0
@@ -1198,7 +1222,7 @@ def page_quant(username: str):
                         s_yf = start_str[:4]+"-"+start_str[4:6]+"-"+start_str[6:]
                         e_yf = end_str[:4]+"-"+end_str[4:6]+"-"+end_str[6:]
                         tmp  = yf.download(yf_t, start=s_yf, end=e_yf,
-                                           progress=False, auto_adjust=True, timeout=8)
+                                           progress=False, auto_adjust=False, timeout=8)
                         if tmp is not None and len(tmp) >= 60:
                             flat = []
                             for c in tmp.columns:
@@ -1455,7 +1479,7 @@ def page_supply_swing(username: str):
                     if inst_pct < 1 and foreign < 5: continue
 
                     hist = None
-                    try: hist = tk.history(start=sup_start, end=e_yf)
+                    try: hist = tk.history(start=sup_start, end=e_yf, auto_adjust=False)
                     except Exception: pass
                     if hist is None or len(hist) < 3: continue
 
@@ -1481,7 +1505,7 @@ def page_supply_swing(username: str):
                     df = None
                     try:
                         tmp = yf.download(yf_t, start=s_yf, end=e_yf,
-                                          progress=False, auto_adjust=True, timeout=8)
+                                          progress=False, auto_adjust=False, timeout=8)
                         if tmp is not None and len(tmp) >= 60:
                             flat = []
                             for c in tmp.columns:
@@ -1508,7 +1532,8 @@ def page_supply_swing(username: str):
                         if cl=="open": cm[c]="open"
                         elif cl=="high": cm[c]="high"
                         elif cl=="low": cm[c]="low"
-                        elif cl in("close","adj close"): cm[c]="close"
+                        elif cl == "close": cm[c]="close"
+                        # adj close 제외 — 실제 종가(close) 사용
                         elif cl=="volume": cm[c]="volume"
                     df = df.rename(columns=cm)
                     for col in ["open","high","low","close","volume"]:
@@ -1517,7 +1542,17 @@ def page_supply_swing(username: str):
                     df = df.dropna(subset=["close"])
                     if len(df) < 60: continue
 
-                    cur_p = float(df["close"].iloc[-1])  # iloc[-1] = 최신가
+                    # 현재가: fast_info 우선 (실시간 실제가) → df fallback
+                    cur_p = 0.0
+                    try:
+                        fi = yf.Ticker(yf_t).fast_info
+                        p  = getattr(fi, "last_price", None)
+                        if p and float(p) > 0:
+                            cur_p = float(p)
+                    except Exception:
+                        pass
+                    if cur_p <= 0:
+                        cur_p = float(df["close"].iloc[-1])  # fallback
 
                     # 거래대금 황금 필터 (200억)
                     last_vol   = float(df["volume"].iloc[-1]) if "volume" in df.columns else 0
@@ -1555,8 +1590,8 @@ def page_supply_swing(username: str):
                     rr      = (target-entry)/(entry-stoploss) if entry>stoploss else 0
                     if rr < 0.8: continue
 
-                    # 가격을 딕셔너리에 저장 (1:1 매핑 — 순서 의존 없음)
-                    price_dict[ticker] = cur_p
+                    # 딕셔너리에 실제 현재가 저장 (1:1 key 매핑)
+                    price_dict[str(ticker).zfill(6)] = cur_p
 
                     results.append({
                         "종목코드":        ticker,       # 6자리 문자열 보장
@@ -1807,7 +1842,7 @@ def page_super_signal(username: str):
                 s_yf = start[:4]+"-"+start[4:6]+"-"+start[6:]
                 e_yf = end[:4]+"-"+end[4:6]+"-"+end[6:]
                 yf_df = yf.download(code+suffix, start=s_yf, end=e_yf,
-                                    progress=False, auto_adjust=True, timeout=8)
+                                    progress=False, auto_adjust=False, timeout=8)
                 if yf_df is not None and len(yf_df) >= 60:
                     yf_df.columns = [c.lower() if isinstance(c,str) else c[0].lower()
                                      for c in yf_df.columns]
@@ -1815,7 +1850,7 @@ def page_super_signal(username: str):
                 if df is None or len(df) < 60:
                     # KOSDAQ 시도
                     yf_df2 = yf.download(code+".KQ", start=s_yf, end=e_yf,
-                                         progress=False, auto_adjust=True, timeout=8)
+                                         progress=False, auto_adjust=False, timeout=8)
                     if yf_df2 is not None and len(yf_df2) >= 60:
                         yf_df2.columns = [c.lower() if isinstance(c,str) else c[0].lower()
                                           for c in yf_df2.columns]
