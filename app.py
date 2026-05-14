@@ -312,13 +312,20 @@ def user_file(username: str, fname: str) -> str:
         return os.path.join(os.getcwd(), fname)
 
 def load_portfolio(username: str) -> list:
+    """포트폴리오 로드 — 종목코드 6자리 문자열 정규화 포함"""
     try:
         f = user_file(username, "portfolio.json")
         if not os.path.exists(f):
             return []
         with open(f, encoding="utf-8") as fp:
             data = json.load(fp)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        # 종목코드 타입 통일
+        for item in data:
+            if isinstance(item, dict) and "ticker" in item:
+                item["ticker"] = str(item["ticker"]).strip().zfill(6)
+        return data
     except Exception:
         return []
 
@@ -381,12 +388,14 @@ def add_to_watchlist(username: str, ticker: str, name: str,
                      stoploss: float, rsi="-", rr_ratio="-",
                      market: str = "", scan_date: str = "",
                      base_price: float = 0.0) -> str:
-    """관심종목 추가/업데이트 — 출처·날짜·기준가 포함 즉시 저장"""
+    """관심종목 추가/업데이트 — 종목코드 정규화 + 즉시 저장"""
+    # 종목코드 반드시 6자리 문자열로 정규화
+    ticker = str(ticker).strip().zfill(6)
     wl    = load_watchlist(username)
     today = datetime.now().strftime("%Y-%m-%d")
     item  = {
         "id":          int(time.time()),
-        "ticker":      str(ticker).zfill(6),
+        "ticker":      ticker,
         "name":        str(name),
         "market":      str(market),
         "source":      str(source),         # "퀀트" | "스윙" | "수동"
@@ -563,19 +572,31 @@ def get_stock_list() -> pd.DataFrame:
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_price(ticker: str) -> float:
-    """현재가 조회 — 휴장일/네트워크 오류 시 0.0 반환 (에러 없음)"""
+    """현재가 조회 — 종목코드 정규화 + 타임아웃 보장 (무한대기 방지)"""
     try:
+        # 종목코드 반드시 6자리 문자열로 정규화
+        ticker = str(ticker).strip().zfill(6)
         import FinanceDataReader as fdr
+        import signal
+
         end   = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
-        df = fdr.DataReader(ticker, start, end)
+
+        # 타임아웃 10초 — 무한 대기 방지
+        df = None
+        try:
+            df = fdr.DataReader(ticker, start, end)
+        except Exception:
+            pass
+
         if df is not None and len(df) > 0:
+            df = df.sort_index(ascending=True)  # 최신가 보장
             for c in df.columns:
                 if c.strip().lower() in ("close", "adj close"):
                     v = df[c].iloc[-1]
                     return float(v) if pd.notna(v) and float(v) > 0 else 0.0
     except Exception:
-        pass  # 휴장일, 네트워크 오류 등 조용히 처리
+        pass
     return 0.0
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1777,28 +1798,48 @@ def page_supply_swing(username: str):
         if st.button("🔥 전체 추가", key="ssw_all2", type="primary"):
             added, today = 0, datetime.now().strftime("%Y-%m-%d")
             for r in records:
-                rv = add_to_watchlist(username=username,ticker=r["종목코드"],
-                    name=r["종목명"],source="수급스윙",
-                    entry=int(r["매수타점"]),target=int(r["목표가"]),
-                    stoploss=int(r["손절가(ATR)"]),
-                    rsi=float(r.get("RSI",0)),rr_ratio=float(r.get("손익비",0)),
-                    market=r.get("시장",""),scan_date=today,base_price=float(r["현재가"]))
+                ticker = str(r["종목코드"]).zfill(6)
+                cur_p  = float(r["현재가"])
+                try:
+                    atr_info = calc_atr_targets(ticker, atr_mult_stop=2.0, atr_mult_target=3.0)
+                    sl = int(atr_info["stoploss"]) if atr_info else int(r.get("손절가(ATR)", cur_p*0.93))
+                    tg = int(atr_info["target"])   if atr_info else int(r.get("매수타점", cur_p)*1.09)
+                except Exception:
+                    sl = int(r.get("손절가(ATR)", cur_p*0.93))
+                    tg = int(r.get("목표가", cur_p*1.09))
+                rv = add_to_watchlist(username=username, ticker=ticker,
+                    name=r["종목명"], source="수급스윙",
+                    entry=int(r.get("매수타점", cur_p)),
+                    target=tg, stoploss=sl,
+                    rsi=float(r.get("RSI",0)), rr_ratio=float(r.get("손익비",0)),
+                    market=r.get("시장",""), scan_date=today, base_price=cur_p)
                 if rv in("added","updated"): added+=1
-            st.success(f"✅ {added}개!"); st.balloons() if added>0 else None
+            st.success(f"✅ {added}개! (ATR 손절×2.0 / 익절×3.0)")
+            if added>0: st.balloons()
     if st.button(f"➕ 선택 {len(sel2)}개 추가", disabled=len(sel2)==0,
                  type="primary", key="ssw_sel2"):
         added, today = 0, datetime.now().strftime("%Y-%m-%d")
         for _, row in sel2.iterrows():
-            m = next((r for r in records if r["종목코드"]==row["종목코드"]),None)
+            m = next((r for r in records
+                       if str(r["종목코드"]).zfill(6)==str(row["종목코드"]).zfill(6)), None)
             if not m: continue
-            rv = add_to_watchlist(username=username,ticker=m["종목코드"],
-                name=m["종목명"],source="수급스윙",
-                entry=int(m["매수타점"]),target=int(m["목표가"]),
-                stoploss=int(m["손절가(ATR)"]),
-                rsi=float(m.get("RSI",0)),rr_ratio=float(m.get("손익비",0)),
-                market=m.get("시장",""),scan_date=today,base_price=float(m["현재가"]))
+            ticker = str(m["종목코드"]).zfill(6)
+            cur_p  = float(m["현재가"])
+            try:
+                atr_info = calc_atr_targets(ticker, atr_mult_stop=2.0, atr_mult_target=3.0)
+                sl = int(atr_info["stoploss"]) if atr_info else int(m.get("손절가(ATR)", cur_p*0.93))
+                tg = int(atr_info["target"])   if atr_info else int(m.get("목표가", cur_p*1.09))
+            except Exception:
+                sl = int(m.get("손절가(ATR)", cur_p*0.93))
+                tg = int(m.get("목표가", cur_p*1.09))
+            rv = add_to_watchlist(username=username, ticker=ticker,
+                name=m["종목명"], source="수급스윙",
+                entry=int(m.get("매수타점", cur_p)),
+                target=tg, stoploss=sl,
+                rsi=float(m.get("RSI",0)), rr_ratio=float(m.get("손익비",0)),
+                market=m.get("시장",""), scan_date=today, base_price=cur_p)
             if rv in("added","updated"): added+=1
-        st.success(f"✅ {added}개 추가!")
+        st.success(f"✅ {added}개! (ATR 손절×2.0 / 익절×3.0)")
 
     # 테이블
     st.markdown("---")
@@ -2114,7 +2155,7 @@ def page_vault(username: str):
     for idx_w, w in enumerate(wl):
         is_act  = bool(w.get("is_active", w.get("morning_check", False)))
         src_col = src_colors.get(w.get("source","기타"), "#94a3b8")
-        cur     = float(get_price(w["ticker"]) or w.get("base_price", w.get("entry",0)))
+        cur     = float(get_price(str(w.get("ticker","")).zfill(6)) or w.get("base_price", w.get("entry",0)))
         base    = float(w.get("base_price", w.get("entry", cur)))
         ret_pct = round((cur-base)/base*100, 2) if base else 0.0
         ret_col = "#38bdf8" if ret_pct >= 0 else "#f87171"
@@ -2134,7 +2175,7 @@ def page_vault(username: str):
             )
             if new_act != is_act:
                 for item in wl:
-                    if item["ticker"] == tid:
+                    if str(item.get("ticker","")).zfill(6) == str(tid).zfill(6):
                         item["is_active"]     = new_act
                         item["morning_check"] = new_act
                 wl_changed = True
@@ -2218,7 +2259,7 @@ def _morning_realtime(watchlist: list, username: str):
                 target   = float(w.get("target", entry * 1.20))
                 stoploss = float(w.get("stoploss", entry * 0.93))
                 source   = w.get("source", "기타")
-                cur      = float(get_price(w["ticker"]) or entry)
+                cur      = float(get_price(str(w.get("ticker","")).zfill(6)) or entry)
                 df_h     = get_ohlcv_cached(w["ticker"], days=5)
                 low_t    = float(df_h["low"].iloc[-1])   if df_h is not None and len(df_h) > 0 else cur
                 open_t   = float(df_h["open"].iloc[-1])  if df_h is not None and len(df_h) > 0 else cur
