@@ -1174,14 +1174,14 @@ def page_quant(username: str):
                     try: info = tk.info or {}
                     except Exception: pass
 
-                    # 재무 필터
-                    if float(info.get("operatingCashflow") or info.get("ebitda") or 0) < 0:
-                        return None
+                    # 재무 필터 (완화 — yfinance null값 오인식 방지)
                     debt_eq = float(info.get("debtToEquity", 0) or 0)
-                    if debt_eq > 200: return None
+                    if debt_eq > 200: return None   # 부채비율 200% 초과만 제외
                     roe     = float(info.get("returnOnEquity", 0) or 0)*100
                     op_marg = float(info.get("operatingMargins", 0) or 0)*100
-                    if roe < 0 or op_marg < 0: return None
+                    # operatingCashflow null → 0 오인식 많아서 제거
+                    # roe/op_marg 음수는 제외하되 null(0)은 통과
+                    if roe < -5 or op_marg < -5: return None
 
                     # 수급 점수 (200일 기준 고정)
                     inst_pct  = float(info.get("heldPercentInstitutions",0) or 0)*100
@@ -1194,7 +1194,7 @@ def page_quant(username: str):
                     hist = None
                     try: hist = tk.history(start=start_200, auto_adjust=False)
                     except Exception: pass
-                    if hist is None or len(hist) < 5: return None
+                    # hist 없어도 계속 진행 (수급점수 0으로 처리)
                     avg_vol   = float(hist["Volume"].mean()) if len(hist)>0 else 0
                     rec_vol   = float(hist["Volume"].iloc[-20:].mean()) if len(hist)>=20 else avg_vol
                     vol_ratio = round(rec_vol/avg_vol, 2) if avg_vol>0 else 1.0
@@ -1570,7 +1570,7 @@ def page_supply_swing(username: str):
                     if "close" in df.columns and len(df)>=20:
                         ma20 = df["close"].rolling(20).mean().iloc[-1]
                         disp = cur_p/ma20 if ma20 else 1
-                        if disp>1.15 or disp<0.90: continue
+                        if disp>1.10 or disp<0.90: continue
                     else:
                         disp = 1.0
 
