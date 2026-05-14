@@ -2287,7 +2287,6 @@ def main():
         "📊 대시보드":              page_dashboard,
         "💼 내 포트폴리오":         page_portfolio,
         "🧮 퀀트 스캐너 2차 정밀":  page_quant,
-        "📈 스윙 매매":             page_swing,
         "📡 수급 기반 스윙 스캐너": page_supply_swing,
         "🚀 슈퍼 시그널":           page_super_signal,
         "🗄️ 관심종목":              page_vault,
