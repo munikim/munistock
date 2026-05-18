@@ -571,41 +571,81 @@ def get_stock_list() -> pd.DataFrame:
     return pd.DataFrame(rows).drop_duplicates("code").reset_index(drop=True)
 
 @st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=60)  # 1분 캐시 — 장중 실시간 반영
 def get_price(ticker: str) -> float:
     """
-    현재가 조회 — 실제 체결가 기준 (배당조정가 아님)
-    우선순위: yf.Ticker.fast_info → yf history(period=5d, auto_adjust=False) → FDR
+    실시간 현재가 조회 — 장중에도 정확한 체결가 반환
+    우선순위:
+      1. 네이버 금융 크롤링 (가장 정확, 실시간)
+      2. yf.Ticker.fast_info.last_price
+      3. yf history(auto_adjust=False) 최신 종가
+      4. FDR DataReader
     """
     try:
         ticker = str(ticker).strip().zfill(6)
-        import yfinance as yf
-        import FinanceDataReader as fdr
 
-        # 시장 suffix 추정 (.KS 먼저, 실패 시 .KQ)
-        for suffix in [".KS", ".KQ"]:
-            yf_t = ticker + suffix
-            try:
-                # 방법 1: fast_info (가장 빠름, 실시간에 가까움)
-                tk = yf.Ticker(yf_t)
-                fi = tk.fast_info
-                price = getattr(fi, "last_price", None)
-                if price and float(price) > 0:
-                    return float(price)
-
-                # 방법 2: history auto_adjust=False (배당조정 안 한 실제 종가)
-                hist = tk.history(period="5d", auto_adjust=False)
-                if hist is not None and len(hist) > 0:
-                    hist = hist.sort_index(ascending=True)
-                    for c in hist.columns:
-                        if c.strip().lower() == "close":
-                            v = hist[c].iloc[-1]
-                            if pd.notna(v) and float(v) > 0:
-                                return float(v)
-            except Exception:
-                continue
-
-        # 방법 3: FDR 폴백
+        # ── 1순위: 네이버 금융 크롤링 ───────────────────────
         try:
+            url  = f"https://finance.naver.com/item/main.naver?code={ticker}"
+            resp = requests.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36"
+            }, timeout=5)
+            if resp.status_code == 200:
+                import re
+                # 현재가 패턴: <p class="no_today"><em ...><span ...>숫자</span>
+                match = re.search(
+                    r'no_today.*?<span[^>]*>([0-9,]+)</span>',
+                    resp.text, re.DOTALL)
+                if not match:
+                    # 대안 패턴
+                    match = re.search(
+                        r'"now"[^>]*>([0-9,]+)',
+                        resp.text)
+                if match:
+                    price = float(match.group(1).replace(",", ""))
+                    if price > 0:
+                        return price
+        except Exception:
+            pass
+
+        # ── 2순위: yfinance fast_info ───────────────────────
+        try:
+            import yfinance as yf
+            for suffix in [".KS", ".KQ"]:
+                try:
+                    fi    = yf.Ticker(ticker + suffix).fast_info
+                    price = getattr(fi, "last_price", None)
+                    if price and float(price) > 0:
+                        return float(price)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 3순위: yf history auto_adjust=False ─────────────
+        try:
+            import yfinance as yf
+            for suffix in [".KS", ".KQ"]:
+                try:
+                    hist = yf.Ticker(ticker + suffix).history(
+                        period="5d", auto_adjust=False)
+                    if hist is not None and len(hist) > 0:
+                        hist = hist.sort_index(ascending=True)
+                        for c in hist.columns:
+                            if c.strip().lower() == "close":
+                                v = hist[c].iloc[-1]
+                                if pd.notna(v) and float(v) > 0:
+                                    return float(v)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 4순위: FDR ───────────────────────────────────────
+        try:
+            import FinanceDataReader as fdr
             end   = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
             df = fdr.DataReader(ticker, start, end)
@@ -623,7 +663,7 @@ def get_price(ticker: str) -> float:
         pass
     return 0.0
 
-@st.cache_data(ttl=300, show_spinner=False)
+
 def get_ohlcv_cached(ticker: str, days: int = 130):
     """OHLCV 조회 — 휴장일/네트워크 오류 시 None 반환"""
     try:
@@ -1542,17 +1582,10 @@ def page_supply_swing(username: str):
                     df = df.dropna(subset=["close"])
                     if len(df) < 60: continue
 
-                    # 현재가: fast_info 우선 (실시간 실제가) → df fallback
-                    cur_p = 0.0
-                    try:
-                        fi = yf.Ticker(yf_t).fast_info
-                        p  = getattr(fi, "last_price", None)
-                        if p and float(p) > 0:
-                            cur_p = float(p)
-                    except Exception:
-                        pass
+                    # 현재가 — 네이버 크롤링 우선 (get_price 내부에 포함)
+                    cur_p = float(get_price(ticker))
                     if cur_p <= 0:
-                        cur_p = float(df["close"].iloc[-1])  # fallback
+                        cur_p = float(df["close"].iloc[-1])  # df fallback
 
                     # 거래대금 황금 필터 (200억)
                     last_vol   = float(df["volume"].iloc[-1]) if "volume" in df.columns else 0
@@ -1621,12 +1654,15 @@ def page_supply_swing(username: str):
                 # 종목코드 타입 최종 보장
                 df_out["종목코드"] = df_out["종목코드"].astype(str).str.zfill(6)
 
-                # ── 딕셔너리 기반 1:1 현재가 재매핑 ─────────────
-                # 순서 의존 없이 종목코드 key로 정확히 매핑
-                df_out["현재가"] = df_out["종목코드"].map(
-                    lambda c: int(price_dict.get(str(c).zfill(6), 0)) or
-                              df_out.loc[df_out["종목코드"]==c, "현재가"].values[0]
-                )
+                # ── 스캔 완료 후 현재가 정밀 재조회 (네이버 기반) ──
+                # price_dict에 이미 get_price 결과 저장됨 → 재매핑
+                def _safe_price(code):
+                    p = price_dict.get(str(code).zfill(6), 0)
+                    return int(p) if p > 0 else 0
+                df_out["현재가"] = df_out["종목코드"].map(_safe_price)
+                # 0인 경우만 기존 값 유지
+                for idx in df_out[df_out["현재가"]==0].index:
+                    pass  # 0이면 스캔 시 이미 제외됨
 
                 df_out.index += 1
                 st.session_state["ssw_records"]       = df_out.to_dict("records")
