@@ -1,0 +1,33 @@
+name: 📊 주식 데이터 수집
+
+on:
+  schedule:
+    - cron: '30 7 * * 1-5'   # 평일 오후 4:30 KST (UTC 07:30)
+  workflow_dispatch:           # 수동 실행
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 패키지 설치
+        run: pip install yfinance finance-datareader pandas ta requests
+
+      - name: 데이터 수집
+        run: python scripts/collect_stock_data.py
+
+      - name: 커밋 & 푸시
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add data/
+          git diff --staged --quiet || git commit -m "📊 $(date +'%Y-%m-%d %H:%M KST')"
+          git push
