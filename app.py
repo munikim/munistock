@@ -423,31 +423,315 @@ def add_to_watchlist(username: str, ticker: str, name: str,
 
 
 # ── 내장 종목 리스트 (최후 보루) ──────────────────────────────
+
+# ════════════════════════════════════════════════════════════
+#  한국투자증권 KIS Open API — 데이터 수집 모듈
+#  Streamlit Cloud에서 차단 없이 실시간 데이터 수집
+# ════════════════════════════════════════════════════════════
+
+# ── KIS API 설정 ─────────────────────────────────────────────
+# .streamlit/secrets.toml 에 아래 형식으로 입력:
+# [kis]
+# app_key    = "PSxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# app_secret = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# account_no = "12345678-01"   # 계좌번호 (앞8자리-뒤2자리)
+# is_paper   = false           # 실전: false, 모의: true
+
+def _kis_cfg():
+    """KIS 설정값 반환"""
+    try:
+        cfg = st.secrets.get("kis", {})
+        return {
+            "app_key":    cfg.get("app_key", ""),
+            "app_secret": cfg.get("app_secret", ""),
+            "account_no": cfg.get("account_no", ""),
+            "is_paper":   bool(cfg.get("is_paper", False)),
+        }
+    except Exception:
+        return {"app_key":"","app_secret":"","account_no":"","is_paper":False}
+
+def _kis_base_url() -> str:
+    cfg = _kis_cfg()
+    return ("https://openapivts.koreainvestment.com:29443"
+            if cfg["is_paper"]
+            else "https://openapi.koreainvestment.com:9443")
+
+@st.cache_data(ttl=82800)   # 23시간 캐시 — 하루 1회 발급
+def _kis_get_token() -> str:
+    """
+    KIS Access Token 발급 (하루 1회)
+    secrets.toml [kis] app_key / app_secret 필요
+    """
+    cfg = _kis_cfg()
+    if not cfg["app_key"] or not cfg["app_secret"]:
+        return ""
+    try:
+        url  = f"{_kis_base_url()}/oauth2/tokenP"
+        body = {
+            "grant_type": "client_credentials",
+            "appkey":     cfg["app_key"],
+            "appsecret":  cfg["app_secret"],
+        }
+        resp = requests.post(url, json=body, timeout=10, verify=False)
+        if resp.status_code == 200:
+            return resp.json().get("access_token", "")
+    except Exception as e:
+        print(f"[KIS 토큰 오류] {e}")
+    return ""
+
+def _kis_headers(tr_id: str) -> dict:
+    """KIS API 공통 헤더"""
+    cfg = _kis_cfg()
+    tok = _kis_get_token()
+    return {
+        "Content-Type":  "application/json; charset=utf-8",
+        "authorization": f"Bearer {tok}",
+        "appkey":        cfg["app_key"],
+        "appsecret":     cfg["app_secret"],
+        "tr_id":         tr_id,
+        "custtype":      "P",
+    }
+
+def _kis_available() -> bool:
+    """KIS API 사용 가능 여부"""
+    cfg = _kis_cfg()
+    return bool(cfg["app_key"] and cfg["app_secret"] and _kis_get_token())
+
+
+# ── 현재가 조회 ───────────────────────────────────────────────
+@st.cache_data(ttl=60)   # 1분 캐시
+def get_price(ticker: str) -> float:
+    """
+    현재가 조회
+    1순위: KIS API (Streamlit Cloud 차단 없음)
+    2순위: 네이버 금융 크롤링
+    3순위: yfinance
+    4순위: FDR
+    """
+    try:
+        ticker = str(ticker).strip().zfill(6)
+
+        # ── 1순위: KIS API ────────────────────────────────────
+        if _kis_available():
+            try:
+                url    = f"{_kis_base_url()}/uapi/domestic-stock/v1/quotations/inquire-price"
+                params = {
+                    "fid_cond_mrkt_div_code": "J",
+                    "fid_input_iscd":         ticker,
+                }
+                resp = requests.get(url, headers=_kis_headers("FHKST01010100"),
+                                    params=params, timeout=8, verify=False)
+                if resp.status_code == 200:
+                    data = resp.json().get("output", {})
+                    price = float(data.get("stck_prpr", 0) or 0)
+                    if price > 0:
+                        return price
+            except Exception as e:
+                print(f"[KIS price 오류] {ticker}: {e}")
+
+        # ── 2순위: 네이버 금융 크롤링 ────────────────────────
+        try:
+            import re
+            url  = f"https://finance.naver.com/item/main.naver?code={ticker}"
+            resp = requests.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://finance.naver.com",
+            }, timeout=5, verify=False)
+            if resp.status_code == 200:
+                m = re.search(r'"item_code"\s*:\s*"' + ticker + r'"[^}]*?"now"\s*:\s*"([0-9,]+)"',
+                              resp.text)
+                if not m:
+                    m = re.search(r'no_today[^"]*"[^"]*"[^>]*>.*?<span[^>]*>([0-9,]+)</span>',
+                                  resp.text, re.DOTALL)
+                if m:
+                    p = float(m.group(1).replace(",",""))
+                    if p > 0: return p
+        except Exception:
+            pass
+
+        # ── 3순위: yfinance ───────────────────────────────────
+        try:
+            import yfinance as yf
+            for sfx in [".KS",".KQ"]:
+                try:
+                    fi = yf.Ticker(ticker+sfx).fast_info
+                    p  = getattr(fi,"last_price",None)
+                    if p and float(p)>0: return float(p)
+                except Exception: continue
+        except Exception: pass
+
+        # ── 4순위: FDR ────────────────────────────────────────
+        try:
+            import FinanceDataReader as fdr
+            end   = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now()-timedelta(days=10)).strftime("%Y%m%d")
+            df = fdr.DataReader(ticker, start, end)
+            if df is not None and len(df)>0:
+                df = df.sort_index(ascending=True)
+                for c in df.columns:
+                    if c.strip().lower() in ("close","adj close"):
+                        v = df[c].iloc[-1]
+                        if pd.notna(v) and float(v)>0: return float(v)
+        except Exception: pass
+
+    except Exception: pass
+    return 0.0
+
+
+# ── OHLCV 데이터 조회 ─────────────────────────────────────────
+@st.cache_data(ttl=300)
+def get_ohlcv_cached(ticker: str, days: int = 130) -> pd.DataFrame | None:
+    """
+    OHLCV 일봉 데이터 조회
+    1순위: KIS API 일자별 시세
+    2순위: yfinance
+    3순위: FDR
+    """
+    try:
+        ticker = str(ticker).strip().zfill(6)
+
+        # ── 1순위: KIS API ────────────────────────────────────
+        if _kis_available():
+            try:
+                url    = f"{_kis_base_url()}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+                end_dt = datetime.now()
+                # KIS는 100일치씩 — days가 크면 여러 번 호출
+                all_rows = []
+                cur_end  = end_dt
+
+                for _ in range((days // 100) + 1):
+                    params = {
+                        "fid_cond_mrkt_div_code": "J",
+                        "fid_input_iscd":         ticker,
+                        "fid_input_date_1":       (cur_end-timedelta(days=100)).strftime("%Y%m%d"),
+                        "fid_input_date_2":       cur_end.strftime("%Y%m%d"),
+                        "fid_period_div_code":    "D",  # 일봉
+                        "fid_org_adj_prc":        "0",  # 수정주가 미적용
+                    }
+                    resp = requests.get(
+                        url, headers=_kis_headers("FHKST03010100"),
+                        params=params, timeout=10, verify=False)
+                    if resp.status_code != 200: break
+                    output2 = resp.json().get("output2", [])
+                    if not output2: break
+                    for row in output2:
+                        try:
+                            all_rows.append({
+                                "date":   row.get("stck_bsop_date",""),
+                                "open":   float(row.get("stck_oprc",0) or 0),
+                                "high":   float(row.get("stck_hgpr",0) or 0),
+                                "low":    float(row.get("stck_lwpr",0) or 0),
+                                "close":  float(row.get("stck_clpr",0) or 0),
+                                "volume": float(row.get("acml_vol",0) or 0),
+                            })
+                        except Exception: continue
+                    # 다음 구간
+                    cur_end = cur_end - timedelta(days=100)
+                    if len(all_rows) >= days: break
+
+                if all_rows:
+                    df = pd.DataFrame(all_rows)
+                    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+                    df = df.dropna(subset=["date"]).set_index("date")
+                    df = df.sort_index(ascending=True)
+                    for col in ["open","high","low","close","volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    return df.dropna(subset=["close"]).tail(days)
+            except Exception as e:
+                print(f"[KIS OHLCV 오류] {ticker}: {e}")
+
+        # ── 2순위: yfinance ───────────────────────────────────
+        try:
+            import yfinance as yf
+            end   = datetime.now()
+            start = end - timedelta(days=days+30)
+            for sfx in [".KS",".KQ"]:
+                try:
+                    tmp = yf.download(ticker+sfx,
+                                      start=start.strftime("%Y-%m-%d"),
+                                      end=end.strftime("%Y-%m-%d"),
+                                      progress=False, auto_adjust=False, timeout=8)
+                    if tmp is None or len(tmp)<10: continue
+                    flat = []
+                    for c in tmp.columns:
+                        if isinstance(c,tuple):
+                            ct = str(c[1]).strip() if len(c)>1 else ""
+                            if ct and ct!=ticker+sfx: continue
+                            flat.append(str(c[0]).strip().lower())
+                        else:
+                            flat.append(str(c).strip().lower())
+                    if len(flat)==len(tmp.columns): tmp.columns = flat
+                    tmp = tmp.sort_index(ascending=True)
+                    cm = {}
+                    for c in tmp.columns:
+                        cl=str(c).strip().lower()
+                        if cl=="open": cm[c]="open"
+                        elif cl=="high": cm[c]="high"
+                        elif cl=="low": cm[c]="low"
+                        elif cl=="close": cm[c]="close"
+                        elif cl=="volume": cm[c]="volume"
+                    tmp = tmp.rename(columns=cm)
+                    for col in ["open","high","low","close","volume"]:
+                        if col in tmp.columns:
+                            tmp[col] = pd.to_numeric(tmp[col], errors="coerce")
+                    tmp = tmp.dropna(subset=["close"])
+                    if len(tmp)>=10: return tmp.tail(days)
+                except Exception: continue
+        except Exception: pass
+
+        # ── 3순위: FDR ────────────────────────────────────────
+        try:
+            import FinanceDataReader as fdr
+            end   = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now()-timedelta(days=days+60)).strftime("%Y%m%d")
+            df = fdr.DataReader(ticker, start, end)
+            if df is not None and len(df)>=10:
+                df = df.sort_index(ascending=True)
+                for c in list(df.columns):
+                    cl=str(c).strip().lower()
+                    if cl in("close","adj close"): df=df.rename(columns={c:"close"})
+                    elif cl=="volume": df=df.rename(columns={c:"volume"})
+                    elif cl=="open": df=df.rename(columns={c:"open"})
+                    elif cl=="high": df=df.rename(columns={c:"high"})
+                    elif cl=="low": df=df.rename(columns={c:"low"})
+                for col in ["open","high","low","close","volume"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                return df.dropna(subset=["close"]).tail(days)
+        except Exception: pass
+
+    except Exception: pass
+    return None
+
+
+# ── 종목 리스트 조회 ──────────────────────────────────────────
+# 내장 하드코딩 (Cloud 차단 환경 최후 보루)
 _KOSPI_TICKERS = [
     ("005930","삼성전자"),("000660","SK하이닉스"),("373220","LG에너지솔루션"),
     ("207940","삼성바이오로직스"),("005380","현대차"),("000270","기아"),
-    ("068270","셀트리온"),("005490","POSCO홀딩스"),("035420","NAVER"),
-    ("051910","LG화학"),("028260","삼성물산"),("012330","현대모비스"),
-    ("066570","LG전자"),("003550","LG"),("015760","한국전력"),
-    ("017670","SK텔레콤"),("086790","하나금융지주"),("055550","신한지주"),
-    ("105560","KB금융"),("316140","우리금융지주"),("003490","대한항공"),
-    ("009150","삼성전기"),("034730","SK"),("030200","KT"),
-    ("036570","엔씨소프트"),("035720","카카오"),("323410","카카오뱅크"),
-    ("259960","크래프톤"),("006400","삼성SDI"),("000100","유한양행"),
-    ("128940","한미약품"),("000720","현대건설"),("010130","고려아연"),
-    ("021240","코웨이"),("009540","한국조선해양"),("042660","한화오션"),
-    ("329180","현대중공업"),("267250","HD현대"),("003670","포스코퓨처엠"),
-    ("247540","에코프로비엠"),("086520","에코프로"),("002380","KCC"),
+    ("068270","셀트리온"),("005490","POSCO홀딩스"),("051910","LG화학"),
+    ("028260","삼성물산"),("012330","현대모비스"),("066570","LG전자"),
+    ("003550","LG"),("017670","SK텔레콤"),("086790","하나금융지주"),
+    ("055550","신한지주"),("105560","KB금융"),("316140","우리금융지주"),
+    ("003490","대한항공"),("009150","삼성전기"),("034730","SK"),
+    ("030200","KT"),("036570","엔씨소프트"),("035720","카카오"),
+    ("323410","카카오뱅크"),("259960","크래프톤"),("006400","삼성SDI"),
+    ("000100","유한양행"),("128940","한미약품"),("000720","현대건설"),
+    ("010130","고려아연"),("021240","코웨이"),("009540","한국조선해양"),
+    ("042660","한화오션"),("329180","현대중공업"),("267250","HD현대"),
+    ("003670","포스코퓨처엠"),("247540","에코프로비엠"),("086520","에코프로"),
     ("000810","삼성화재"),("032640","LG유플러스"),("078930","GS"),
     ("071050","한국금융지주"),("139480","이마트"),("004170","신세계"),
     ("011170","롯데케미칼"),("064350","현대로템"),("012450","한화에어로스페이스"),
     ("004020","현대제철"),("000880","한화"),("001040","CJ"),
     ("097950","CJ제일제당"),("033780","KT&G"),("002790","아모레퍼시픽"),
     ("051900","LG생활건강"),("006800","미래에셋증권"),("016360","삼성증권"),
-    ("180640","한진칼"),("007310","오뚜기"),("004800","효성"),
-    ("028670","팬오션"),("000150","두산"),("241560","두산밥캣"),
-    ("034020","두산에너빌리티"),("047810","한국항공우주"),("272210","한화시스템"),
-    ("082740","한화엔진"),("010950","S-Oil"),("096770","SK이노베이션"),
+    ("180640","한진칼"),("007310","오뚜기"),("010950","S-Oil"),
+    ("096770","SK이노베이션"),("035420","NAVER"),("047810","한국항공우주"),
+    ("272210","한화시스템"),("241560","두산밥캣"),("034020","두산에너빌리티"),
+    ("082740","한화엔진"),("003230","삼양식품"),("010060","OCI홀딩스"),
+    ("018260","삼성에스디에스"),("011200","HMM"),("028670","팬오션"),
 ]
 _KOSDAQ_TICKERS = [
     ("091990","셀트리온헬스케어"),("145020","휴젤"),("196170","알테오젠"),
@@ -458,260 +742,126 @@ _KOSDAQ_TICKERS = [
     ("041510","에스엠"),("066970","엘앤에프"),("053800","안랩"),
     ("237690","에스티팜"),("214450","파마리서치"),("048260","오스템임플란트"),
     ("196300","에이비엘바이오"),("000250","삼천당제약"),("068760","셀트리온제약"),
-    ("095700","제넥신"),("140410","메지온"),("085660","차바이오텍"),
-    ("060310","3S"),("131970","두산테스나"),("108320","LX세미콘"),
-    ("078020","이베스트투자증권"),("047920","HLB제약"),("028300","HLB"),
+    ("085660","차바이오텍"),("028300","HLB"),("047920","HLB제약"),
     ("096530","씨젠"),("145600","나노신소재"),("089590","제이시스메디칼"),
-    ("060850","티에스아이"),("025320","시노펙스"),("060160","지니언스"),
-    ("032540","TJ미디어"),("094970","제이엠티"),("036540","SFA반도체"),
-    ("078000","텔코웨어"),("025560","미래산업"),("950160","코오롱티슈진"),
-    ("183300","코미팜"),("115180","큐리언트"),("290690","성우테크론"),
-    ("065620","고려신용정보"),("041190","우리기술투자"),("336370","솔루스첨단소재"),
+    ("007660","이수페타시스"),("108320","LX세미콘"),("095340","ISC"),
+    ("131970","두산테스나"),("036930","주성엔지니어링"),("049950","미래컴퍼니"),
+    ("060720","KH바텍"),("122990","와이솔"),("091580","상아프론테크"),
+    ("036810","에프에스티"),("028300","HLB"),("060150","인선이엔티"),
+    ("141080","리가켐바이오"),("335890","비비씨"),("950160","코오롱티슈진"),
+    ("950130","엑세스바이오"),("086820","바이오솔루션"),("024840","KBI메탈"),
+    ("101490","에스앤에스텍"),("080220","제주반도체"),("096190","티에스이"),
 ]
 
-@st.cache_data(ttl=1800, show_spinner=False)
+
+@st.cache_data(ttl=3600)
 def get_market_tickers(market: str) -> list:
     """
-    종목 리스트 수집 — 4단계 폴백:
-    1) FDR StockListing
-    2) Yahoo Finance .KS/.KQ 우회
-    3) pykrx
-    4) 내장 하드코딩 리스트
+    종목 리스트 — 4단계 폴백
+    1) KIS 업종별 종목 조회
+    2) FDR StockListing
+    3) yfinance 내장 리스트
+    4) 하드코딩 내장 리스트
     """
-    suffix = ".KS" if market == "KOSPI" else ".KQ"
+    suffix = ".KS" if market=="KOSPI" else ".KQ"
     errors = []
 
-    # ── 1단계: FDR StockListing ──────────────────────────────
+    # ── 1단계: KIS 업종별 조회 ────────────────────────────────
+    if _kis_available():
+        try:
+            url    = f"{_kis_base_url()}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+            # KIS 시장별 상위 종목 조회
+            mkt_code = "0" if market=="KOSPI" else "1"
+            url2   = f"{_kis_base_url()}/uapi/domestic-stock/v1/ranking/fluctuation"
+            params = {
+                "fid_cond_mrkt_div_code": "J",
+                "fid_cond_scr_div_code":  "20170",
+                "fid_input_iscd":         "0001" if market=="KOSPI" else "1001",
+                "fid_rank_sort_cls_code":  "0",
+                "fid_input_cnt_1":         "100",
+                "fid_prc_cls_code":        "0",
+                "fid_input_price_1":       "",
+                "fid_input_price_2":       "",
+                "fid_vol_cnt":             "100000",
+                "fid_trgt_cls_code":       "0",
+                "fid_trgt_exls_cls_code":  "0",
+                "fid_div_cls_code":        "0",
+                "fid_rsfl_rate1":          "",
+                "fid_rsfl_rate2":          "",
+            }
+            resp = requests.get(url2, headers=_kis_headers("FHPST01170000"),
+                                params=params, timeout=10, verify=False)
+            if resp.status_code == 200:
+                output = resp.json().get("output", [])
+                rows = []
+                for r in output:
+                    code = str(r.get("stck_shrn_iscd","")).zfill(6)
+                    name = r.get("hts_kor_isnm","")
+                    if code.isdigit() and name:
+                        rows.append({"ticker":code,"name":name,"market":market,
+                                     "yf_ticker":code+suffix})
+                if rows:
+                    print(f"[KIS] {market}: {len(rows)}개")
+                    return rows
+        except Exception as e:
+            errors.append(f"KIS: {e}")
+
+    # ── 2단계: FDR ────────────────────────────────────────────
     try:
         import FinanceDataReader as fdr
         lst = fdr.StockListing(market)
-        if lst is not None and len(lst) > 0:
+        if lst is not None and len(lst)>0:
             lst.columns = [c.strip() for c in lst.columns]
-            code_col = next((c for c in lst.columns if c in ["Code","Symbol"]), None)
-            name_col = next((c for c in lst.columns if c in ["Name","종목명"]), None)
-            amt_col  = next((c for c in lst.columns if c in ["Amount","Tvalue","Marcap"]), None)
-            if code_col:
-                lst[code_col] = lst[code_col].astype(str).str.zfill(6)
-                sample = lst.nlargest(120, amt_col) if amt_col else lst.head(120)
-                rows = [{"ticker": str(r[code_col]).zfill(6),
-                         "name":   str(r.get(name_col, r[code_col])),
-                         "market": market,
-                         "yf_ticker": str(r[code_col]).zfill(6) + suffix}
-                        for _, r in sample.iterrows()
-                        if str(r[code_col]).isdigit()]
+            cc = next((c for c in lst.columns if c in ["Code","Symbol"]),None)
+            nc = next((c for c in lst.columns if c in ["Name","종목명"]),None)
+            ac = next((c for c in lst.columns if c in ["Amount","Tvalue","Marcap"]),None)
+            if cc:
+                lst[cc] = lst[cc].astype(str).str.zfill(6)
+                sample  = lst.nlargest(120,ac) if ac else lst.head(120)
+                rows    = [{"ticker":str(r[cc]).zfill(6),
+                            "name":str(r.get(nc,r[cc])),
+                            "market":market,
+                            "yf_ticker":str(r[cc]).zfill(6)+suffix}
+                           for _,r in sample.iterrows() if str(r[cc]).isdigit()]
                 if rows:
-                    print(f"[티커] FDR 성공: {market} {len(rows)}개")
+                    print(f"[FDR] {market}: {len(rows)}개")
                     return rows
     except Exception as e:
-        errors.append(f"FDR: {type(e).__name__}: {str(e)[:80]}")
-        print(f"[티커오류] {errors[-1]}")
+        errors.append(f"FDR: {e}")
 
-    # ── 2단계: Yahoo Finance .KS/.KQ 우회 ────────────────────
-    try:
-        import yfinance as yf
-        # Yahoo Finance에서 KOSPI/KOSDAQ 지수 구성종목 스크리닝
-        # ^KS11 = KOSPI 지수, ^KQ11 = KOSDAQ 지수
-        base = _KOSPI_TICKERS if market == "KOSPI" else _KOSDAQ_TICKERS
-        rows = []
-        for code, name in base:
-            yf_ticker = f"{code}{suffix}"
-            rows.append({"ticker": code, "name": name,
-                         "market": market, "yf_ticker": yf_ticker})
-        if rows:
-            print(f"[티커] Yahoo Finance 우회 성공: {market} {len(rows)}개")
-            return rows
-    except Exception as e:
-        errors.append(f"Yahoo: {type(e).__name__}: {str(e)[:80]}")
-        print(f"[티커오류] {errors[-1]}")
-
-    # ── 3단계: pykrx ─────────────────────────────────────────
-    try:
-        from pykrx import stock as krx_stock
-        today = datetime.now().strftime("%Y%m%d")
-        codes = krx_stock.get_market_ticker_list(today, market=market)
-        rows = []
-        for code in list(codes)[:120]:
-            try:    name = krx_stock.get_market_ticker_name(code)
-            except: name = code
-            rows.append({"ticker": str(code).zfill(6), "name": name,
-                         "market": market,
-                         "yf_ticker": str(code).zfill(6) + suffix})
-        if rows:
-            print(f"[티커] pykrx 성공: {market} {len(rows)}개")
-            return rows
-    except Exception as e:
-        errors.append(f"pykrx: {type(e).__name__}: {str(e)[:80]}")
-        print(f"[티커오류] {errors[-1]}")
-
-    # ── 4단계: 내장 하드코딩 리스트 ──────────────────────────
-    print(f"[티커] 내장 리스트 사용: {market} (오류: {'; '.join(errors)})")
-    base = _KOSPI_TICKERS if market == "KOSPI" else _KOSDAQ_TICKERS
-    return [{"ticker": c, "name": n, "market": market,
-             "yf_ticker": c + suffix} for c, n in base]
+    # ── 3·4단계: 내장 리스트 ──────────────────────────────────
+    base = _KOSPI_TICKERS if market=="KOSPI" else _KOSDAQ_TICKERS
+    print(f"[내장] {market}: {len(base)}개 (오류: {'; '.join(str(e) for e in errors)})")
+    return [{"ticker":c,"name":n,"market":market,"yf_ticker":c+suffix} for c,n in base]
 
 
+@st.cache_data(ttl=3600)
 def get_stock_list() -> pd.DataFrame:
-    """종목 목록 — FDR 성공 시 전체 리스트, 실패 시 내장 리스트 폴백"""
+    """포트폴리오 검색용 전체 종목 리스트"""
     rows = []
 
-    # 1순위: FDR StockListing
-    try:
-        import FinanceDataReader as fdr
-        for market in ["KOSPI", "KOSDAQ"]:
-            try:
-                df = fdr.StockListing(market)
-                df.columns = [c.strip() for c in df.columns]
-                code_col = next((c for c in df.columns if c in ["Code","Symbol","종목코드"]), None)
-                name_col = next((c for c in df.columns if c in ["Name","종목명","ISU_ABBRV"]), None)
-                if not code_col or not name_col: continue
-                for _, r in df.iterrows():
-                    code = str(r[code_col]).strip().zfill(6)
-                    name = str(r[name_col]).strip()
-                    if code.isdigit() and name:
-                        rows.append({"code": code, "name": name, "market": market,
-                                     "display": f"{name} ({code})"})
-            except Exception:
-                continue
-    except Exception:
-        pass
+    # KIS → FDR → 내장 순 폴백
+    for market in ["KOSPI","KOSDAQ"]:
+        tickers = get_market_tickers(market)
+        for t in tickers:
+            rows.append({"code":t["ticker"],"name":t["name"],
+                         "market":market,
+                         "display":f"{t['name']} ({t['ticker']})"})
 
-    # 2순위: 내장 리스트 폴백 (Cloud 환경 KRX 차단 대비)
-    if len(rows) < 50:
-        rows = []
-        for code, name in _KOSPI_TICKERS:
-            rows.append({"code": str(code).zfill(6), "name": name, "market": "KOSPI",
-                         "display": f"{name} ({str(code).zfill(6)})"})
-        for code, name in _KOSDAQ_TICKERS:
-            rows.append({"code": str(code).zfill(6), "name": name, "market": "KOSDAQ",
-                         "display": f"{name} ({str(code).zfill(6)})"})
+    if not rows:
+        for c,n in _KOSPI_TICKERS:
+            rows.append({"code":str(c).zfill(6),"name":n,"market":"KOSPI",
+                         "display":f"{n} ({str(c).zfill(6)})"})
+        for c,n in _KOSDAQ_TICKERS:
+            rows.append({"code":str(c).zfill(6),"name":n,"market":"KOSDAQ",
+                         "display":f"{n} ({str(c).zfill(6)})"})
 
-    df_result = pd.DataFrame(rows).drop_duplicates("code").reset_index(drop=True)
-    # 이름 기준 정렬 — 검색 편의
-    return df_result.sort_values("name").reset_index(drop=True)
-
-@st.cache_data(ttl=180, show_spinner=False)
-@st.cache_data(ttl=60)  # 1분 캐시 — 장중 실시간 반영
-def get_price(ticker: str) -> float:
-    """
-    실시간 현재가 조회 — 장중에도 정확한 체결가 반환
-    우선순위:
-      1. 네이버 금융 크롤링 (가장 정확, 실시간)
-      2. yf.Ticker.fast_info.last_price
-      3. yf history(auto_adjust=False) 최신 종가
-      4. FDR DataReader
-    """
-    try:
-        ticker = str(ticker).strip().zfill(6)
-
-        # ── 1순위: 네이버 금융 크롤링 ───────────────────────
-        try:
-            url  = f"https://finance.naver.com/item/main.naver?code={ticker}"
-            resp = requests.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/120.0.0.0 Safari/537.36"
-            }, timeout=5)
-            if resp.status_code == 200:
-                import re
-                # 현재가 패턴: <p class="no_today"><em ...><span ...>숫자</span>
-                match = re.search(
-                    r'no_today.*?<span[^>]*>([0-9,]+)</span>',
-                    resp.text, re.DOTALL)
-                if not match:
-                    # 대안 패턴
-                    match = re.search(
-                        r'"now"[^>]*>([0-9,]+)',
-                        resp.text)
-                if match:
-                    price = float(match.group(1).replace(",", ""))
-                    if price > 0:
-                        return price
-        except Exception:
-            pass
-
-        # ── 2순위: yfinance fast_info ───────────────────────
-        try:
-            import yfinance as yf
-            for suffix in [".KS", ".KQ"]:
-                try:
-                    fi    = yf.Ticker(ticker + suffix).fast_info
-                    price = getattr(fi, "last_price", None)
-                    if price and float(price) > 0:
-                        return float(price)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # ── 3순위: yf history auto_adjust=False ─────────────
-        try:
-            import yfinance as yf
-            for suffix in [".KS", ".KQ"]:
-                try:
-                    hist = yf.Ticker(ticker + suffix).history(
-                        period="5d", auto_adjust=False)
-                    if hist is not None and len(hist) > 0:
-                        hist = hist.sort_index(ascending=True)
-                        for c in hist.columns:
-                            if c.strip().lower() == "close":
-                                v = hist[c].iloc[-1]
-                                if pd.notna(v) and float(v) > 0:
-                                    return float(v)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # ── 4순위: FDR ───────────────────────────────────────
-        try:
-            import FinanceDataReader as fdr
-            end   = datetime.now().strftime("%Y%m%d")
-            start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
-            df = fdr.DataReader(ticker, start, end)
-            if df is not None and len(df) > 0:
-                df = df.sort_index(ascending=True)
-                for c in df.columns:
-                    if c.strip().lower() in ("close", "adj close"):
-                        v = df[c].iloc[-1]
-                        if pd.notna(v) and float(v) > 0:
-                            return float(v)
-        except Exception:
-            pass
-
-    except Exception:
-        pass
-    return 0.0
+    return (pd.DataFrame(rows)
+            .drop_duplicates("code")
+            .sort_values("name")
+            .reset_index(drop=True))
 
 
-def get_ohlcv_cached(ticker: str, days: int = 130):
-    """OHLCV 조회 — 휴장일/네트워크 오류 시 None 반환"""
-    try:
-        import FinanceDataReader as fdr
-        end   = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-        df = fdr.DataReader(ticker, start, end)
-        if df is None or len(df) == 0:
-            return None
-        col_map = {}
-        for c in df.columns:
-            cl = c.strip().lower()
-            if cl == "open":    col_map[c] = "open"
-            elif cl == "high":  col_map[c] = "high"
-            elif cl == "low":   col_map[c] = "low"
-            elif cl in ("close","adj close"): col_map[c] = "close"
-            elif cl == "volume": col_map[c] = "volume"
-        df = df.rename(columns=col_map)
-        for col in ["open","high","low","close","volume"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df.dropna(subset=["close"])
-    except Exception:
-        return None  # 조용히 처리
-
-
-# ════════════════════════════════════════════════════════════
-#  페이지 함수들 — 완전 재작성 (표 UI, 방어적 렌더링)
-# ════════════════════════════════════════════════════════════
 
 def calc_atr_targets(ticker: str, atr_mult_stop: float = 2.0,
                       atr_mult_target: float = 6.0) -> dict:
@@ -1214,212 +1364,98 @@ def page_portfolio(username: str):
 def page_quant(username: str):
     try:
         st.markdown("## 🧮 퀀트 스캐너 2차 정밀")
-        st.info("💡 모멘텀 + A급 눌림목 필터. 장 마감 후 실행 권장.")
 
-        with st.expander("📐 스캔 조건", expanded=False):
-            c1,c2,c3 = st.columns(3)
-            with c1:
-                market  = st.selectbox("시장", ["KOSPI","KOSDAQ","전체"], key="q_mkt")
-                top_n   = st.slider("결과 상위 N개", 10, 60, 30, key="q_topn")
-            with c2:
-                min_vol_bil = st.number_input("최소 거래대금(억)", value=50, step=50,
-                                               key="q_vol")
-                rsi_min = st.number_input("RSI 하한", value=40, step=5, key="q_rsi_min")
-            with c3:
-                workers = st.slider("병렬 스레드", 3, 15, 8, key="q_wrk")
-                rsi_max = st.number_input("RSI 상한", value=80, step=5, key="q_rsi_max")
+        import os, json as _json
 
-        st.markdown(
-            f'<div style="background:#1e2535;border:1px solid #6366f1;border-radius:8px;'
-            f'padding:0.4rem 0.9rem;font-size:0.8rem;color:#94a3b8;margin-bottom:0.5rem;">'
-            f'📐 RSI {rsi_min}~{rsi_max} | 거래대금≥{min_vol_bil}억 | 이격도≤110% | A급 눌림목 우선</div>',
-            unsafe_allow_html=True)
+        data_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", "quant_scan.json")
+        meta_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", "meta.json")
 
-        if st.button("⚡ 퀀트 스캔 시작", type="primary", key="q_scan"):
-            import yfinance as yf
-            import FinanceDataReader as fdr
-            from concurrent.futures import ThreadPoolExecutor
-            import ta as _ta
+        if not os.path.exists(data_path):
+            st.warning("📭 스캔 데이터 없음 — GitHub Actions 설정이 필요합니다.")
+            with st.expander("📋 설정 방법 (1회만 하면 됩니다)", expanded=True):
+                st.markdown("""
+                **GitHub Actions가 매일 장 마감 후 자동으로 데이터를 수집합니다.**
 
-            prog = st.progress(0, text="종목 수집 중...")
-            markets = ["KOSPI","KOSDAQ"] if market=="전체" else [market]
-            tickers = []
-            for mkt in markets:
-                tickers.extend(get_market_tickers(mkt))
-            if not tickers:
-                st.error("❌ 종목 목록을 가져올 수 없습니다.")
-                return
+                ### 1단계: 저장소에 파일 2개 추가
+                아래 파일들을 GitHub에 업로드하세요:
+                - `.github/workflows/collect_data.yml`
+                - `scripts/collect_stock_data.py`
 
-            suffix_map = {"KOSPI":".KS","KOSDAQ":".KQ"}
-            end_dt     = datetime.now()
-            end_str    = end_dt.strftime("%Y%m%d")
-            start_str  = (end_dt - timedelta(days=400)).strftime("%Y%m%d")
-            s_yf       = start_str[:4]+"-"+start_str[4:6]+"-"+start_str[6:]
-            e_yf       = end_str[:4]+"-"+end_str[4:6]+"-"+end_str[6:]
+                ### 2단계: 첫 실행
+                ```
+                GitHub → Actions 탭 → "주식 데이터 수집" → Run workflow
+                ```
 
-            def _analyze(t):
-                try:
-                    ticker = str(t["ticker"]).zfill(6)
-                    yf_t   = t.get("yf_ticker", ticker+suffix_map.get(t["market"],".KS"))
+                ### 3단계: 이후 자동화
+                매일 오후 4시(KST) 자동 수집됩니다.
+                """)
+            return
 
-                    # 데이터 수집 — Yahoo 우선, FDR 폴백
-                    df = None
-                    try:
-                        tmp = yf.download(yf_t, start=s_yf, end=e_yf,
-                                          progress=False, auto_adjust=False, timeout=8)
-                        if tmp is not None and len(tmp) >= 60:
-                            flat = []
-                            for c in tmp.columns:
-                                if isinstance(c, tuple):
-                                    ct = str(c[1]).strip() if len(c)>1 else ""
-                                    if ct and ct != yf_t: continue
-                                    flat.append(str(c[0]).strip().lower())
-                                else:
-                                    flat.append(str(c).strip().lower())
-                            if len(flat)==len(tmp.columns):
-                                tmp.columns = flat
-                            df = tmp.sort_index(ascending=True)
-                    except Exception: pass
-                    if df is None:
-                        try:
-                            raw = fdr.DataReader(ticker, start_str, end_str)
-                            df  = raw.sort_index(ascending=True) if raw is not None else None
-                        except Exception: pass
-                    if df is None or len(df) < 60: return None
+        # 메타 정보
+        updated = "알 수 없음"
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = _json.load(f)
+            updated = meta.get("updated_at","알 수 없음")
+            st.success(f"✅ 데이터 기준: **{updated}** | 총 {meta.get('total',0)}개 | 🔥A급 {meta.get('a_grade',0)}개")
+        except Exception:
+            pass
 
-                    cm = {}
-                    for c in df.columns:
-                        cl = str(c).strip().lower()
-                        if cl=="open":    cm[c]="open"
-                        elif cl=="high":  cm[c]="high"
-                        elif cl=="low":   cm[c]="low"
-                        elif cl=="close": cm[c]="close"
-                        elif cl=="volume": cm[c]="volume"
-                    df = df.rename(columns=cm)
-                    for col in ["open","high","low","close","volume"]:
-                        if col in df.columns:
-                            df[col] = pd.to_numeric(df[col], errors="coerce")
-                    df = df.dropna(subset=["close"])
-                    if len(df)<60 or "close" not in df.columns: return None
+        with open(data_path, encoding="utf-8") as f:
+            all_records = _json.load(f)
+        if not all_records:
+            st.info("📭 데이터가 비어있습니다.")
+            return
 
-                    cur_p = float(df["close"].iloc[-1])
-                    if cur_p <= 0: return None
+        st.info(f"📊 장 마감 후 수집 데이터 | {updated} 기준 | 실시간 현재가는 별도 조회")
 
-                    # 거래대금
-                    tval = cur_p * float(df["volume"].iloc[-1]) / 1e8 if "volume" in df.columns else 0
-                    if tval < min_vol_bil: return None
+        # 필터 UI
+        with st.expander("🔍 필터", expanded=True):
+            fc1,fc2,fc3,fc4 = st.columns(4)
+            with fc1: f_market   = st.selectbox("시장",["전체","KOSPI","KOSDAQ"],key="q_f_mkt")
+            with fc2: f_score    = st.slider("최소 종합점수",0,100,0,key="q_f_score")
+            with fc3: f_n        = st.slider("표시 종목수",10,100,30,key="q_f_n")
+            with fc4: f_a        = st.checkbox("🔥 A급만",key="q_f_a")
 
-                    # 이평선
-                    df["ma5"]   = df["close"].rolling(5).mean()
-                    df["ma20"]  = df["close"].rolling(20).mean()
-                    df["ma60"]  = df["close"].rolling(60).mean()
-                    df["ma120"] = df["close"].rolling(120).mean() if len(df)>=120 else df["ma20"]
-                    row = df.iloc[-1]
-                    if any(pd.isna([row.get("ma5",float("nan")),
-                                    row.get("ma20",float("nan"))])): return None
+        records = all_records.copy()
+        if f_market != "전체":
+            records = [r for r in records if r.get("시장")==f_market]
+        if f_score > 0:
+            records = [r for r in records if r.get("종합점수",0)>=f_score]
+        if f_a:
+            records = [r for r in records if r.get("is_a",False)]
+        records = sorted(records,
+            key=lambda x:(x.get("is_a",False),x.get("종합점수",0)),
+            reverse=True)[:f_n]
 
-                    ma20 = float(row["ma20"])
-                    disp = cur_p/ma20 if ma20>0 else 1
-                    if disp > 1.10 or disp < 0.85: return None
-                    if not (row["close"] > row["ma5"] > row["ma20"]): return None
-
-                    # RSI
-                    try:
-                        rsi_val = float(_ta.momentum.RSIIndicator(df["close"],14).rsi().iloc[-1])
-                        if pd.isna(rsi_val) or not(rsi_min<=rsi_val<=rsi_max): return None
-                    except: rsi_val = 50.0
-
-                    momentum = (df["close"].iloc[-1]/df["close"].iloc[0]-1)*100
-
-                    # ATR
-                    atr_val = 0.0
-                    try:
-                        if all(c in df.columns for c in ["high","low","close"]):
-                            atr_val = float(_ta.volatility.AverageTrueRange(
-                                df["high"],df["low"],df["close"],14
-                            ).average_true_range().iloc[-1])
-                    except: pass
-
-                    # A급 눌림목
-                    is_a = False
-                    if "volume" in df.columns and len(df)>=21:
-                        ma60_v = float(row.get("ma60", ma20))
-                        near   = (abs(cur_p-ma20)/ma20<=0.05) or                                  (abs(cur_p-ma60_v)/ma60_v<=0.05 if ma60_v>0 else False)
-                        va     = df["volume"].rolling(20).mean().iloc[-6]
-                        r5     = df["volume"].iloc[-6:-1]
-                        spk    = bool((r5>=va*2.5).any()) if va and va>0 else False
-                        dec    = float(df["volume"].iloc[-1]) < float(r5.max()) if spk else False
-                        is_a   = near and spk and dec
-
-                    # 종합 점수
-                    mom_s  = min(40, max(0, momentum*0.5))
-                    rsi_s  = 20 if 50<=rsi_val<=70 else (10 if 40<=rsi_val<=80 else 0)
-                    disp_s = min(20, max(0, (1.10-disp)*200))
-                    a_s    = 20 if is_a else 0
-                    score  = round(mom_s+rsi_s+disp_s+a_s, 1)
-
-                    return {
-                        "is_a":            is_a,
-                        "종목코드":        ticker,
-                        "종목명":          t["name"],
-                        "시장":            t["market"],
-                        "현재가":          int(cur_p),
-                        "종합점수":        score,
-                        "RSI":             round(rsi_val,1),
-                        "이격도(%)":       round(disp*100,2),
-                        "ATR(%)":          round(atr_val/cur_p*100,2) if cur_p>0 else 0,
-                        "12개월수익률(%)": round(momentum,2),
-                        "거래대금(억)":    round(tval,1),
-                    }
-                except Exception: return None
-
-            prog.progress(5, text=f"{len(tickers)}개 병렬 분석 중...")
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = list(ex.map(_analyze, tickers))
-            results = [r for r in futs if r]
-            prog.progress(100, text="✅ 완료!")
-
-            if results:
-                df_all = (pd.DataFrame(results)
-                          .sort_values(["is_a","종합점수"], ascending=[False,False])
-                          .head(top_n).reset_index(drop=True))
-                df_all["종목코드"] = df_all["종목코드"].astype(str).str.zfill(6)
-                df_all.index += 1
-                st.session_state["quant_records"] = df_all.to_dict("records")
-                st.session_state["quant_results"] = df_all[["종목코드","종목명"]].to_dict("records")
-                a_cnt = int(df_all["is_a"].sum())
-                st.success(f"✅ {len(df_all)}개 | 🔥A급 눌림목 {a_cnt}개")
-            else:
-                st.info("📭 조건 부합 종목 없음 — 필터 조건을 완화해 보세요.")
-
-        records = st.session_state.get("quant_records", [])
         if not records:
-            st.info("👆 스캔 버튼을 눌러주세요.")
+            st.info("📭 필터 조건에 맞는 종목 없음")
             return
 
         df_show = pd.DataFrame(records)
         df_show["종목코드"] = df_show["종목코드"].astype(str).str.zfill(6)
         a_cnt = sum(1 for r in records if r.get("is_a"))
-        st.markdown(f"### 📊 결과 {len(records)}개 | 🔥A급 눌림목 {a_cnt}개")
+        st.markdown(f"### 📊 {len(records)}개 | 🔥A급 {a_cnt}개")
 
         fa,fb = st.columns([4,1])
-        with fa: st.caption("A급 우선 | ATR 손절×2.0 / 익절×3.0")
+        with fa: st.caption("종합점수 내림차순 | ATR 손절×2.0 / 익절×3.0")
         with fb:
-            if st.button("🔥 전체 추가", key="q_all", type="primary"):
-                added, today = 0, datetime.now().strftime("%Y-%m-%d")
+            if st.button("🔥 전체 추가",key="q_all",type="primary"):
+                added,today = 0,datetime.now().strftime("%Y-%m-%d")
                 for r in records:
                     ticker = str(r["종목코드"]).zfill(6)
                     cur_p  = float(r["현재가"])
                     try:
-                        ai = calc_atr_targets(ticker, atr_mult_stop=2.0, atr_mult_target=3.0)
+                        ai = calc_atr_targets(ticker,2.0,3.0)
                         sl = int(ai["stoploss"]) if ai else int(cur_p*0.93)
                         tg = int(ai["target"])   if ai else int(cur_p*1.09)
-                    except Exception:
-                        sl, tg = int(cur_p*0.93), int(cur_p*1.09)
-                    rv = add_to_watchlist(username=username, ticker=ticker,
-                        name=r["종목명"], source="퀀트", entry=int(cur_p),
-                        target=tg, stoploss=sl, market=r.get("시장",""),
-                        scan_date=today, base_price=cur_p)
+                    except: sl,tg = int(cur_p*0.93),int(cur_p*1.09)
+                    rv = add_to_watchlist(username=username,ticker=ticker,
+                        name=r["종목명"],source="퀀트",entry=int(cur_p),
+                        target=tg,stoploss=sl,market=r.get("시장",""),
+                        scan_date=today,base_price=cur_p)
                     if rv in("added","updated"): added+=1
                 st.success(f"✅ {added}개 추가!")
                 if added>0: st.balloons()
@@ -1427,36 +1463,33 @@ def page_quant(username: str):
         disp = ["종목코드","종목명","시장","현재가","종합점수","RSI",
                 "이격도(%)","ATR(%)","12개월수익률(%)","거래대금(억)"]
         df_ed = df_show[[c for c in disp if c in df_show.columns]].copy()
-        df_ed.insert(0, "선택", False)
-        df_ed.insert(0, "등급", df_show.get("is_a",
+        df_ed.insert(0,"선택",False)
+        df_ed.insert(0,"등급",df_show.get("is_a",
             pd.Series([False]*len(df_show))).map({True:"🔥",False:"—"}))
-        edited = st.data_editor(
-            df_ed,
-            column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
-            disabled=[c for c in df_ed.columns if c != "선택"],
-            use_container_width=True, hide_index=True, key="q_editor",
-        )
+        edited = st.data_editor(df_ed,
+            column_config={"선택":st.column_config.CheckboxColumn("선택",default=False)},
+            disabled=[c for c in df_ed.columns if c!="선택"],
+            use_container_width=True,hide_index=True,key="q_editor")
         sel = edited[edited["선택"]==True]
         st.caption(f"{len(sel)}개 선택")
-        if st.button(f"➕ 선택 {len(sel)}개 추가", type="primary",
-                     disabled=len(sel)==0, key="q_bulk"):
-            added, today = 0, datetime.now().strftime("%Y-%m-%d")
-            for _, row in sel.iterrows():
+        if st.button(f"➕ 선택 {len(sel)}개 추가",type="primary",
+                     disabled=len(sel)==0,key="q_bulk"):
+            added,today = 0,datetime.now().strftime("%Y-%m-%d")
+            for _,row in sel.iterrows():
                 ticker  = str(row["종목코드"]).zfill(6)
                 matched = next((r for r in records
-                                if str(r["종목코드"]).zfill(6)==ticker), None)
+                    if str(r["종목코드"]).zfill(6)==ticker),None)
                 if not matched: continue
-                cur_p = float(get_price(ticker) or matched["현재가"])
+                cur_p = float(matched["현재가"])
                 try:
-                    ai = calc_atr_targets(ticker, atr_mult_stop=2.0, atr_mult_target=3.0)
+                    ai = calc_atr_targets(ticker,2.0,3.0)
                     sl = int(ai["stoploss"]) if ai else int(cur_p*0.93)
                     tg = int(ai["target"])   if ai else int(cur_p*1.09)
-                except Exception:
-                    sl, tg = int(cur_p*0.93), int(cur_p*1.09)
-                rv = add_to_watchlist(username=username, ticker=ticker,
-                    name=matched["종목명"], source="퀀트", entry=int(cur_p),
-                    target=tg, stoploss=sl, market=matched.get("시장",""),
-                    scan_date=today, base_price=cur_p)
+                except: sl,tg = int(cur_p*0.93),int(cur_p*1.09)
+                rv = add_to_watchlist(username=username,ticker=ticker,
+                    name=matched["종목명"],source="퀀트",entry=int(cur_p),
+                    target=tg,stoploss=sl,market=matched.get("시장",""),
+                    scan_date=today,base_price=cur_p)
                 if rv in("added","updated"): added+=1
             st.success(f"✅ {added}개 추가!")
         st.session_state["quant_results"] = [
