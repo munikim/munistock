@@ -1223,18 +1223,16 @@ def page_quant(username: str):
                 top_n   = st.slider("결과 상위 N개", 10, 60, 30, key="q_topn")
             with c2:
                 min_vol_bil = st.number_input("최소 거래대금(억)", value=50, step=50,
-                                               key="q_vol", help="기본 50억")
-                rsi_min = st.number_input("RSI 하한", value=40, step=5,
-                                           key="q_rsi_min", help="기본 40")
+                                               key="q_vol")
+                rsi_min = st.number_input("RSI 하한", value=40, step=5, key="q_rsi_min")
             with c3:
                 workers = st.slider("병렬 스레드", 3, 15, 8, key="q_wrk")
-                rsi_max = st.number_input("RSI 상한", value=80, step=5,
-                                           key="q_rsi_max", help="기본 80")
+                rsi_max = st.number_input("RSI 상한", value=80, step=5, key="q_rsi_max")
 
         st.markdown(
             f'<div style="background:#1e2535;border:1px solid #6366f1;border-radius:8px;'
             f'padding:0.4rem 0.9rem;font-size:0.8rem;color:#94a3b8;margin-bottom:0.5rem;">'
-            f'📐 필터 — RSI {rsi_min}~{rsi_max} | 거래대금≥{min_vol_bil}억 | A급 눌림목 우선</div>',
+            f'📐 RSI {rsi_min}~{rsi_max} | 거래대금≥{min_vol_bil}억 | 이격도≤110% | A급 눌림목 우선</div>',
             unsafe_allow_html=True)
 
         if st.button("⚡ 퀀트 스캔 시작", type="primary", key="q_scan"):
@@ -1264,7 +1262,7 @@ def page_quant(username: str):
                     ticker = str(t["ticker"]).zfill(6)
                     yf_t   = t.get("yf_ticker", ticker+suffix_map.get(t["market"],".KS"))
 
-                    # ── 가격/거래량 데이터 수집 ──────────────
+                    # 데이터 수집 — Yahoo 우선, FDR 폴백
                     df = None
                     try:
                         tmp = yf.download(yf_t, start=s_yf, end=e_yf,
@@ -1278,7 +1276,7 @@ def page_quant(username: str):
                                     flat.append(str(c[0]).strip().lower())
                                 else:
                                     flat.append(str(c).strip().lower())
-                            if len(flat) == len(tmp.columns):
+                            if len(flat)==len(tmp.columns):
                                 tmp.columns = flat
                             df = tmp.sort_index(ascending=True)
                     except Exception: pass
@@ -1289,68 +1287,49 @@ def page_quant(username: str):
                         except Exception: pass
                     if df is None or len(df) < 60: return None
 
-                    # 컬럼 정규화
                     cm = {}
                     for c in df.columns:
                         cl = str(c).strip().lower()
-                        if cl == "open":    cm[c] = "open"
-                        elif cl == "high":  cm[c] = "high"
-                        elif cl == "low":   cm[c] = "low"
-                        elif cl == "close": cm[c] = "close"
-                        elif cl == "volume": cm[c] = "volume"
+                        if cl=="open":    cm[c]="open"
+                        elif cl=="high":  cm[c]="high"
+                        elif cl=="low":   cm[c]="low"
+                        elif cl=="close": cm[c]="close"
+                        elif cl=="volume": cm[c]="volume"
                     df = df.rename(columns=cm)
                     for col in ["open","high","low","close","volume"]:
                         if col in df.columns:
                             df[col] = pd.to_numeric(df[col], errors="coerce")
                     df = df.dropna(subset=["close"])
-                    if len(df) < 60 or "close" not in df.columns: return None
+                    if len(df)<60 or "close" not in df.columns: return None
 
-                    cur_p   = float(df["close"].iloc[-1])
+                    cur_p = float(df["close"].iloc[-1])
                     if cur_p <= 0: return None
 
-                    # 거래대금 필터
-                    if "volume" in df.columns:
-                        tval = cur_p * float(df["volume"].iloc[-1]) / 1e8
-                        if tval < min_vol_bil: return None
+                    # 거래대금
+                    tval = cur_p * float(df["volume"].iloc[-1]) / 1e8 if "volume" in df.columns else 0
+                    if tval < min_vol_bil: return None
 
-                    # 지표 계산
+                    # 이평선
                     df["ma5"]   = df["close"].rolling(5).mean()
                     df["ma20"]  = df["close"].rolling(20).mean()
                     df["ma60"]  = df["close"].rolling(60).mean()
-                    df["ma120"] = df["close"].rolling(120).mean() if len(df)>=120 else df["close"].rolling(60).mean()
-
+                    df["ma120"] = df["close"].rolling(120).mean() if len(df)>=120 else df["ma20"]
                     row = df.iloc[-1]
                     if any(pd.isna([row.get("ma5",float("nan")),
                                     row.get("ma20",float("nan"))])): return None
 
-                    # 이격도 필터 (110% 이하)
                     ma20 = float(row["ma20"])
-                    disp = cur_p/ma20 if ma20 > 0 else 1
+                    disp = cur_p/ma20 if ma20>0 else 1
                     if disp > 1.10 or disp < 0.85: return None
-
-                    # 이평선 정배열
                     if not (row["close"] > row["ma5"] > row["ma20"]): return None
 
-                    # RSI 필터
+                    # RSI
                     try:
                         rsi_val = float(_ta.momentum.RSIIndicator(df["close"],14).rsi().iloc[-1])
-                        if pd.isna(rsi_val) or not(rsi_min <= rsi_val <= rsi_max): return None
-                    except Exception:
-                        rsi_val = 50.0
+                        if pd.isna(rsi_val) or not(rsi_min<=rsi_val<=rsi_max): return None
+                    except: rsi_val = 50.0
 
-                    # 모멘텀
                     momentum = (df["close"].iloc[-1]/df["close"].iloc[0]-1)*100
-
-                    # A급 눌림목 (MA 근접 + 대량거래 후 감소)
-                    is_a = False
-                    if "volume" in df.columns and len(df)>=21:
-                        ma60_v = float(row.get("ma60", ma20))
-                        near   = (abs(cur_p-ma20)/ma20<=0.05) or                                  (abs(cur_p-ma60_v)/ma60_v<=0.05 if ma60_v>0 else False)
-                        va     = df["volume"].rolling(20).mean().iloc[-6]
-                        r5     = df["volume"].iloc[-6:-1]
-                        spk    = bool((r5 >= va*2.5).any()) if va and va>0 else False
-                        dec    = float(df["volume"].iloc[-1]) < float(r5.max()) if spk else False
-                        is_a   = near and spk and dec
 
                     # ATR
                     atr_val = 0.0
@@ -1359,12 +1338,23 @@ def page_quant(username: str):
                             atr_val = float(_ta.volatility.AverageTrueRange(
                                 df["high"],df["low"],df["close"],14
                             ).average_true_range().iloc[-1])
-                    except Exception: pass
+                    except: pass
 
-                    # 종합 점수 (모멘텀 + 이격도 역수 + RSI 적정도)
+                    # A급 눌림목
+                    is_a = False
+                    if "volume" in df.columns and len(df)>=21:
+                        ma60_v = float(row.get("ma60", ma20))
+                        near   = (abs(cur_p-ma20)/ma20<=0.05) or                                  (abs(cur_p-ma60_v)/ma60_v<=0.05 if ma60_v>0 else False)
+                        va     = df["volume"].rolling(20).mean().iloc[-6]
+                        r5     = df["volume"].iloc[-6:-1]
+                        spk    = bool((r5>=va*2.5).any()) if va and va>0 else False
+                        dec    = float(df["volume"].iloc[-1]) < float(r5.max()) if spk else False
+                        is_a   = near and spk and dec
+
+                    # 종합 점수
                     mom_s  = min(40, max(0, momentum*0.5))
                     rsi_s  = 20 if 50<=rsi_val<=70 else (10 if 40<=rsi_val<=80 else 0)
-                    disp_s = min(20, max(0, (1.10-disp)*200))  # 이격도 낮을수록 좋음
+                    disp_s = min(20, max(0, (1.10-disp)*200))
                     a_s    = 20 if is_a else 0
                     score  = round(mom_s+rsi_s+disp_s+a_s, 1)
 
@@ -1379,10 +1369,9 @@ def page_quant(username: str):
                         "이격도(%)":       round(disp*100,2),
                         "ATR(%)":          round(atr_val/cur_p*100,2) if cur_p>0 else 0,
                         "12개월수익률(%)": round(momentum,2),
-                        "거래대금(억)":    round(tval,1) if "volume" in df.columns else 0,
+                        "거래대금(억)":    round(tval,1),
                     }
-                except Exception:
-                    return None
+                except Exception: return None
 
             prog.progress(5, text=f"{len(tickers)}개 병렬 분석 중...")
             with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -1403,7 +1392,6 @@ def page_quant(username: str):
             else:
                 st.info("📭 조건 부합 종목 없음 — 필터 조건을 완화해 보세요.")
 
-        # ── 결과 렌더링 ──────────────────────────────────────
         records = st.session_state.get("quant_records", [])
         if not records:
             st.info("👆 스캔 버튼을 눌러주세요.")
@@ -1415,7 +1403,7 @@ def page_quant(username: str):
         st.markdown(f"### 📊 결과 {len(records)}개 | 🔥A급 눌림목 {a_cnt}개")
 
         fa,fb = st.columns([4,1])
-        with fa: st.caption("종합점수 내림차순 | A급 우선 | ATR 손절×2.0 / 익절×3.0")
+        with fa: st.caption("A급 우선 | ATR 손절×2.0 / 익절×3.0")
         with fb:
             if st.button("🔥 전체 추가", key="q_all", type="primary"):
                 added, today = 0, datetime.now().strftime("%Y-%m-%d")
@@ -1440,8 +1428,8 @@ def page_quant(username: str):
                 "이격도(%)","ATR(%)","12개월수익률(%)","거래대금(억)"]
         df_ed = df_show[[c for c in disp if c in df_show.columns]].copy()
         df_ed.insert(0, "선택", False)
-        df_ed.insert(0, "등급", df_show.get("is_a", pd.Series([False]*len(df_show))).map(
-            {True:"🔥",False:"—"}))
+        df_ed.insert(0, "등급", df_show.get("is_a",
+            pd.Series([False]*len(df_show))).map({True:"🔥",False:"—"}))
         edited = st.data_editor(
             df_ed,
             column_config={"선택": st.column_config.CheckboxColumn("선택", default=False)},
@@ -1472,7 +1460,8 @@ def page_quant(username: str):
                 if rv in("added","updated"): added+=1
             st.success(f"✅ {added}개 추가!")
         st.session_state["quant_results"] = [
-            {"종목코드":str(r["종목코드"]).zfill(6),"종목명":r["종목명"]} for r in records]
+            {"종목코드":str(r["종목코드"]).zfill(6),"종목명":r["종목명"]}
+            for r in records]
 
     except Exception as e:
         st.error(f"퀀트 스캐너 오류: {e}")
