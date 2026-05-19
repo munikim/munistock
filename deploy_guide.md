@@ -1,51 +1,44 @@
-# 🚀 Streamlit Cloud 배포 가이드
+# 🚀 로컬 실행 가이드 (실시간 데이터 수집)
 
-## 1. GitHub 저장소 준비
-
-```
-swing-dashboard/
-├── app.py
-├── requirements.txt
-└── .gitignore          ← 반드시 생성!
+## 1단계: Python 설치 확인
+```bash
+python --version  # 3.9 이상이면 OK
 ```
 
-### .gitignore 내용
-```
-.streamlit/secrets.toml
-user_data/
-__pycache__/
-*.pyc
+## 2단계: 필요 패키지 설치
+```bash
+pip install streamlit pandas numpy plotly finance-datareader yfinance ta requests openpyxl
 ```
 
-## 2. 로컬 텔레그램 설정
+## 3단계: GitHub에서 코드 받기
+```bash
+git clone https://github.com/munikim/munistock.git
+cd munistock
+```
 
-`.streamlit/secrets.toml` 파일 생성:
+## 4단계: 앱 실행
+```bash
+streamlit run app.py
+```
+→ 브라우저에서 http://localhost:8501 자동 열림
+
+## 5단계: 텔레그램 secrets 설정 (선택)
+프로젝트 폴더에 `.streamlit/secrets.toml` 생성:
 ```toml
 [telegram]
-token   = "8754838258:AAGCArF6VjcYQSOHRf4mpgjmWZ30YAGwMd0"
-chat_id = "8720367426"
-```
-
-## 3. Streamlit Cloud 배포
-
-1. [share.streamlit.io](https://share.streamlit.io) 접속
-2. GitHub 계정 연결 → New app
-3. 저장소/브랜치/파일 선택
-4. **Advanced settings → Secrets** 에 secrets.toml 내용 붙여넣기:
-```toml
-[telegram]
-token = "봇토큰"
+token   = "봇토큰"
 chat_id = "챗ID"
 ```
-5. Deploy 클릭 → 약 2~3분 후 완료
 
-## 4. 모바일 홈화면 추가 (앱처럼 사용)
+## ✅ 로컬에서 되는 것들
+- 퀀트 스캐너 실시간 (yfinance 차단 없음)
+- 수급 기반 스윙 스캐너 실시간
+- 네이버 금융 현재가 크롤링
+- FDR 전체 종목 리스트
 
-**iOS**: Safari → 공유 버튼 → 홈 화면에 추가
-**Android**: Chrome → 메뉴 → 앱 설치 / 홈 화면에 추가
-
-## 5. 데이터 파일 경로
-
-Streamlit Cloud는 배포마다 파일이 초기화됩니다.
-- `watchlist.json` 등은 재배포 시 초기화될 수 있습니다.
-- 중요 데이터는 주기적으로 백업하거나 DB 연동을 고려하세요.
+## 📱 폰에서도 쓰고 싶다면
+같은 와이파이에서:
+```
+http://PC의IP주소:8501
+```
+PC IP 확인: Windows → `ipconfig`, Mac → `ifconfig`
